@@ -68,6 +68,8 @@
 //! Typical performance: 1-5ms for a single light on modern hardware,
 //! scaling roughly linearly with the number of active lights.
 
+use once_cell::sync::Lazy;
+use std::sync::RwLock;
 use wasm_bindgen::prelude::*;
 
 // Re-export public modules for library use
@@ -76,6 +78,25 @@ pub mod block_map;
 pub mod constants;
 pub mod lighting;
 pub mod ray;
+
+/// Function pointer type for obstacle detection
+pub type IsBlockedFn = fn(i16, i16, i16, i16) -> bool;
+
+/// Global function pointer for obstacle detection (can be overridden for testing)
+static IS_BLOCKED_FN: Lazy<RwLock<IsBlockedFn>> =
+    Lazy::new(|| RwLock::new(default_is_blocked_impl));
+
+/// Default implementation that calls the JavaScript function
+#[cfg(target_arch = "wasm32")]
+fn default_is_blocked_impl(x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
+    is_blocked_from_js(x0, y0, x1, y1)
+}
+
+/// Default implementation for non-WASM targets (always returns false)
+#[cfg(not(target_arch = "wasm32"))]
+fn default_is_blocked_impl(_x0: i16, _y0: i16, _x1: i16, _y1: i16) -> bool {
+    false
+}
 
 /// External JavaScript function for logging debug information.
 ///
@@ -109,7 +130,39 @@ extern "C" {
 /// available as a WASM export that JavaScript can import and use.
 #[wasm_bindgen(js_name = doTheThing)]
 pub fn is_blocked(x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
-    is_blocked_from_js(x0, y0, x1, y1)
+    if let Ok(func) = IS_BLOCKED_FN.read() {
+        (*func)(x0, y0, x1, y1)
+    } else {
+        false
+    }
+}
+
+/// Set a custom obstacle detection function (useful for testing)
+///
+/// # Arguments
+/// * `func` - Function that takes (x0, y0, x1, y1) and returns true if blocked
+///
+/// # Example
+/// ```rust,no_run
+/// use bresenham_lighting_engine::set_is_blocked_fn;
+///
+/// // Set a custom function for testing
+/// set_is_blocked_fn(|x0, y0, x1, y1| {
+///     // Custom logic here
+///     false
+/// });
+/// ```
+pub fn set_is_blocked_fn(func: IsBlockedFn) {
+    if let Ok(mut current_func) = IS_BLOCKED_FN.write() {
+        *current_func = func;
+    }
+}
+
+/// Reset the obstacle detection function to the default implementation
+pub fn reset_is_blocked_fn() {
+    if let Ok(mut current_func) = IS_BLOCKED_FN.write() {
+        *current_func = default_is_blocked_impl;
+    }
 }
 
 /// Export a logging function for JavaScript use.

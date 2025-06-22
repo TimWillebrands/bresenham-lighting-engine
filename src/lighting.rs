@@ -21,7 +21,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use crate::{arctan, is_blocked, ray};
+use crate::{arctan, ray};
 
 /// Maximum distance for light ray casting
 #[cfg(not(test))]
@@ -173,7 +173,7 @@ impl Light {
                     let prev = ray::step(curr, self.pos);
 
                     // Check if this ray is blocked by an obstacle
-                    if is_blocked(prev.0, prev.1, curr.0, curr.1) {
+                    if crate::is_blocked(prev.0, prev.1, curr.0, curr.1) {
                         // Block only this specific ray and maybe 1 adjacent ray
                         self.blocked_angles[angle] = d as u8;
 
