@@ -1,18 +1,26 @@
 {
   "name": "bresenham-lighting-engine",
   "version": "1.0.0",
-  "description": "Lighting using wasm in c3",
+  "description": "When your GPU is too mainstream and you want to do lighting the hard way™️",
   "main": "index.js",
   "scripts": {
-    "build:wasm": "c3c compile -D PLATFORM_WEB --reloc=none --target wasm32 -O5 -g0 --link-libc=no  --no-entry -o lighting -z --export-table *.c3",
-    "dev": "serve . & find . -name '*.c3' | entr -r npm run build:wasm"
+    "build": "wasm-pack build --target web --out-dir examples/web-demo/pkg",
+    "serve": "serve examples/web-demo",
+    "dev": "concurrently \"cargo watch -s \\\"bun run build\\\"\" \"bun run serve\""
   },
+  "keywords": [
+    "bresenham",
+    "gamedev",
+    "wasm"
+  ],
   "author": "",
   "license": "ISC",
   "private": true,
   "devDependencies": {
     "@types/bun": "latest",
-    "madr-tools": "^1.2.5"
+    "madr-tools": "^1.2.5",
+    "concurrently": "^8.2.2",
+    "serve": "^14.2.3"
   },
   "peerDependencies": {
     "typescript": "^5"

@@ -22,14 +22,14 @@ The core idea is simple but kinda genius:
 
 ## Quick Start (for the impatient)
 
-Install dependencies:
+Install `wasm-pack`:
 ```bash
-bun install
+cargo install wasm-pack
 ```
 
 Build the WASM module:
 ```bash
-bun run build
+wasm-pack build --target web
 ```
 
 Run the demo:
@@ -53,7 +53,7 @@ Perfect for:
 
 - [x] Basic WASM implementation that doesn't crash
 - [x] Ray casting with proper shadow calculation  
-- [ ] Native library bindings (C/C++/Rust/whatever)
+- [ ] Native library bindings (C/C++/whatever)
 - [ ] Godot plugin (because indie devs deserve nice things)
 - [ ] Performance optimizations (SIMD goes brrr)
 - [ ] Better color blending modes
@@ -80,4 +80,4 @@ ISC - Do whatever you want, just don't sue us if your computer catches fire from
 
 ---
 
-*Built with C3 and questionable life choices. Powered by the ancient art of drawing lines on computers.*
+*Built with Rust and questionable life choices. Powered by the ancient art of drawing lines on computers.*

@@ -1,3 +1,5 @@
+import init, { put, IsBlocked, Log } from './pkg/bresenham_lighting_engine.js';
+
 const canvas = document.getElementById('game')
 const ctx = canvas.getContext('2d')
 const wallsCanvas = document.getElementById('walls')
@@ -6,48 +8,22 @@ const wallsCtx = wallsCanvas.getContext('2d', {willReadFrequently: true})
 const blackPixel = new ImageData(new Uint8ClampedArray([255,255,255,255]),1)
 const transPixel = new ImageData(new Uint8ClampedArray([255,255,255,0]),1)
 
-const env = {
-    IsBlocked: function (srcX, srcY, tarX, tarY) {
-        const pixel = wallsCtx.getImageData(tarX-1, tarY-1, 1, 1)
-        // if(pixel.data[3] > 0) console.log
-        return pixel.data[3] > 0
-    },
-    Log: function (x, y, z) {
-        console.log('[wasm]', x, y, z)
-        return false
-    }
-}
-
-const importObject = new Proxy(env, {
-    get (target, prop, receiver) {
-        if (env[prop] !== undefined) {
-            return env[prop].bind(env)
-        }
-        return (...args) => {
-            throw new Error(`NOT IMPLEMENTED: ${prop} ${args}`)
-        }
-    }
-})
-
-const wasm = await WebAssembly.instantiateStreaming(
-    fetch('lighting.wasm'), { env: importObject })
-
-wasm.instance.exports._initialize()
+await init();
 
 console.time('[perf] init')
-wasm.instance.exports.init()
+// wasm.instance.exports.init() - This is now called on start
 console.timeEnd('[perf] init')
 
 const size = 60 * 2 + 1
 function update(x, y, r){
     console.time('[perf] update')
-    const canvasPtr = wasm.instance.exports.put(34, r, x, y)
+    const canvasPtr = put(34, r, x, y)
     console.timeEnd('[perf] update')
 
     console.time('[perf] canvas')
     ctx.clearRect(0, 0, 180, 180)
-    const mem = wasm.instance.exports.memory.buffer
-    const cells = new Uint8ClampedArray(mem, canvasPtr, size * size * 4)
+    // const mem = wasm.instance.exports.memory.buffer - wasm-bindgen abstracts this
+    const cells = new Uint8ClampedArray(put.memory.buffer, canvasPtr, size * size * 4)
     const imageData = new ImageData(cells, size, size)
     ctx.putImageData(imageData, x - size/2, y - size/2)
 

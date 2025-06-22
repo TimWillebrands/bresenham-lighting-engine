@@ -1,0 +1,14 @@
+[package]
+name = "bresenham-lighting-engine"
+version = "0.1.0"
+edition = "2021"
+description = "A CPU-based 2D lighting engine using Bresenham's line algorithm"
+license = "ISC"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+num-traits = "0.2"
+once_cell = "1.19.0" 
