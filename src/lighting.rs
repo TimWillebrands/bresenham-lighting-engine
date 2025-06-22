@@ -25,21 +25,15 @@ use crate::{arctan, is_blocked, ray};
 
 /// Maximum distance for light ray casting
 #[cfg(not(test))]
-const DIST: usize = 60;
+const MAX_DIST: usize = 60;
 #[cfg(test)]
-const DIST: usize = 10; // Smaller for tests to avoid stack overflow
+const MAX_DIST: usize = 10; // Smaller for tests to avoid stack overflow
 
 /// Number of discrete angles for ray casting (360 degrees)
 #[cfg(not(test))]
 const ANGLES: usize = 360;
 #[cfg(test)]
 const ANGLES: usize = 36; // Smaller for tests to avoid stack overflow
-
-/// Size of one side of the light canvas (diameter of the light circle)
-const LIGHT_ROW: usize = DIST * 2 + 1;
-
-/// Total number of pixels in the light canvas
-const LIGHT_SIZE: usize = LIGHT_ROW * LIGHT_ROW;
 
 /// 2D point represented as (x, y) coordinates using 16-bit signed integers
 type PtI = (i16, i16);
@@ -54,13 +48,13 @@ pub struct Color(pub u8, pub u8, pub u8, pub u8);
 ///
 /// This lazy static is computed once at startup and contains all the points
 /// that each ray will traverse for every possible angle and distance combination.
-static ALL_RAYS: Lazy<[[Vec<PtI>; ANGLES]; DIST]> = Lazy::new(|| {
-    let mut rays: [[Vec<PtI>; ANGLES]; DIST] =
+static ALL_RAYS: Lazy<[[Vec<PtI>; ANGLES]; MAX_DIST]> = Lazy::new(|| {
+    let mut rays: [[Vec<PtI>; ANGLES]; MAX_DIST] =
         std::array::from_fn(|_| std::array::from_fn(|_| Vec::new()));
 
-    // Calculate all possible points within the light radius
+    // Calculate all possible points within the maximum light radius
     let center = (0, 0);
-    let radius = DIST as i16;
+    let radius = MAX_DIST as i16;
     let top = center.1 - radius;
     let bottom = center.1 + radius;
     let left = center.0 - radius;
@@ -75,7 +69,7 @@ static ALL_RAYS: Lazy<[[Vec<PtI>; ANGLES]; DIST]> = Lazy::new(|| {
 
             if dist <= radius as u16 {
                 let angle = arctan::rad_to_deg(arctan::atan2_int(y as i32, x as i32)) as usize;
-                if angle < ANGLES && (dist as usize) < DIST {
+                if angle < ANGLES && (dist as usize) < MAX_DIST {
                     rays[dist as usize][angle].push(pt);
                 }
             }
@@ -101,7 +95,9 @@ struct Light {
     /// Radius/range of the light (maximum distance it can illuminate)
     r: i16,
     /// Rendered pixel data for this light (RGBA format)
-    canvas: [Color; LIGHT_SIZE],
+    canvas: Vec<Color>,
+    /// Canvas dimensions (width and height)
+    canvas_size: usize,
     /// For each angle (0-359°), stores the distance at which the ray is blocked
     /// A value of 255 means the ray is not blocked within the light's range
     blocked_angles: [u8; ANGLES],
@@ -117,10 +113,13 @@ impl Light {
     /// # Returns
     /// A new Light instance with cleared canvas and unblocked angles
     fn new(pos: PtI, r: i16) -> Self {
+        let canvas_size = (r * 2 + 1) as usize;
+        let canvas_pixels = canvas_size * canvas_size;
         Light {
             pos,
             r,
-            canvas: [Color::default(); LIGHT_SIZE],
+            canvas: vec![Color::default(); canvas_pixels],
+            canvas_size,
             blocked_angles: [255; ANGLES], // 255 = not blocked
         }
     }
@@ -137,21 +136,33 @@ impl Light {
     /// # Returns
     /// Pointer to the beginning of the canvas pixel data for WASM interop
     fn update(&mut self) -> *const Color {
+        // Resize canvas if radius changed
+        let new_canvas_size = (self.r * 2 + 1) as usize;
+        let new_canvas_pixels = new_canvas_size * new_canvas_size;
+        if self.canvas.len() != new_canvas_pixels {
+            self.canvas = vec![Color::default(); new_canvas_pixels];
+            self.canvas_size = new_canvas_size;
+        }
+
         // Reset state for fresh calculation
         self.blocked_angles.fill(255);
         self.canvas.iter_mut().for_each(|p| *p = Color::default());
 
         // Process each distance ring from the light source
-        for d in 0..self.r as u8 {
+        for d in 0..self.r as usize {
+            if d >= MAX_DIST {
+                break;
+            }
+
             // Process each angle (360 degrees)
-            'angle_loop: for angle in 0..ANGLES {
+            for angle in 0..ANGLES {
                 // Skip this angle if it's already blocked at a closer distance
-                if self.blocked_angles[angle] < d {
+                if self.blocked_angles[angle] < d as u8 {
                     continue;
                 }
 
                 // Process all cells at this specific distance and angle
-                for cell in &ALL_RAYS[d as usize][angle] {
+                for cell in &ALL_RAYS[d][angle] {
                     // Special case: only process cardinal directions at distance 0
                     if d == 0 && angle % 90 != 0 {
                         continue;
@@ -163,74 +174,33 @@ impl Light {
 
                     // Check if this ray is blocked by an obstacle
                     if is_blocked(prev.0, prev.1, curr.0, curr.1) {
-                        // Calculate shadow projection when ray hits an obstacle
-                        let (p, n) = self.get_shadow_directions(angle, *cell);
+                        // Block only this specific ray and maybe 1 adjacent ray
+                        self.blocked_angles[angle] = d as u8;
 
-                        let prev_angle =
-                            arctan::rad_to_deg(arctan::atan2_int(p.1 as i32, p.0 as i32)) as usize;
-                        let next_angle =
-                            arctan::rad_to_deg(arctan::atan2_int(n.1 as i32, n.0 as i32)) as usize;
+                        // Optionally block 1 adjacent ray on each side for very close obstacles
+                        if d < 3 {
+                            let left_angle = if angle > 0 { angle - 1 } else { ANGLES - 1 };
+                            let right_angle = (angle + 1) % ANGLES;
 
-                        // Mark the shadow range as blocked
-                        self.mark_shadow_range(prev_angle, next_angle, d);
+                            if self.blocked_angles[left_angle] > d as u8 {
+                                self.blocked_angles[left_angle] = d as u8;
+                            }
+                            if self.blocked_angles[right_angle] > d as u8 {
+                                self.blocked_angles[right_angle] = d as u8;
+                            }
+                        }
 
                         // Skip to next angle since this ray is blocked
-                        continue 'angle_loop;
+                        break;
                     }
 
                     // Ray is not blocked, so render the light at this position
-                    self.render_light_pixel(*cell, angle, d);
+                    self.render_light_pixel(*cell, angle, d as u8);
                 }
             }
         }
 
         self.canvas.as_ptr()
-    }
-
-    /// Determines the shadow projection directions based on the angle and obstacle position
-    ///
-    /// # Arguments
-    /// * `angle` - The angle of the ray that hit the obstacle (0-359°)
-    /// * `cell` - The local coordinates of the obstacle relative to the light
-    ///
-    /// # Returns
-    /// A tuple of two points representing the shadow boundaries (previous, next)
-    fn get_shadow_directions(&self, angle: usize, cell: PtI) -> (PtI, PtI) {
-        match angle {
-            315 => ((cell.0 - 1, cell.1), (cell.0, cell.1 - 1)),
-            a if !(45..=315).contains(&a) => ((cell.0, cell.1 + 1), (cell.0, cell.1 - 1)),
-            45 => ((cell.0, cell.1 + 1), (cell.0 + 1, cell.1)),
-            a if a > 45 && a < 135 => ((cell.0 - 1, cell.1), (cell.0 + 1, cell.1)),
-            135 => ((cell.0 - 1, cell.1), (cell.0, cell.1 + 1)),
-            a if a > 135 && a < 225 => ((cell.0, cell.1 - 1), (cell.0, cell.1 + 1)),
-            225 => ((cell.0, cell.1 - 1), (cell.0 - 1, cell.1)),
-            _ => ((cell.0 + 1, cell.1), (cell.0 - 1, cell.1)),
-        }
-    }
-
-    /// Marks a range of angles as blocked for shadow casting
-    ///
-    /// # Arguments
-    /// * `prev_angle` - Starting angle of the shadow range
-    /// * `next_angle` - Ending angle of the shadow range
-    /// * `distance` - Distance at which the blocking occurs
-    fn mark_shadow_range(&mut self, prev_angle: usize, next_angle: usize, distance: u8) {
-        if prev_angle < next_angle {
-            // Normal case: shadow range doesn't cross 0°/360° boundary
-            for a in prev_angle..=next_angle {
-                if a < ANGLES {
-                    self.blocked_angles[a] = distance;
-                }
-            }
-        } else {
-            // Special case: shadow range crosses the 0°/360° boundary
-            for a in 0..=prev_angle {
-                self.blocked_angles[a] = distance;
-            }
-            for a in next_angle..ANGLES {
-                self.blocked_angles[a] = distance;
-            }
-        }
     }
 
     /// Renders a single pixel of light onto the canvas
@@ -241,8 +211,17 @@ impl Light {
     /// * `distance` - Distance from light source (used for brightness falloff)
     fn render_light_pixel(&mut self, cell: PtI, angle: usize, distance: u8) {
         // Transform local coordinates to canvas coordinates
-        let c = (cell.0 + LIGHT_ROW as i16 / 2, cell.1 + LIGHT_ROW as i16 / 2);
-        let cell_idx = c.0 as usize + c.1 as usize * LIGHT_ROW;
+        let c = (
+            cell.0 + self.canvas_size as i16 / 2,
+            cell.1 + self.canvas_size as i16 / 2,
+        );
+
+        // Check bounds
+        if c.0 < 0 || c.1 < 0 || c.0 >= self.canvas_size as i16 || c.1 >= self.canvas_size as i16 {
+            return;
+        }
+
+        let cell_idx = c.0 as usize + c.1 as usize * self.canvas_size;
 
         // Calculate brightness falloff based on distance
         let falloff = 255 - (255 * distance as u16) / (self.r as u16);
@@ -300,7 +279,7 @@ fn hsv2rgb(h: u8, s: u8, v: u8) -> Color {
 ///
 /// # Arguments
 /// * `id` - Unique identifier for the light (0-255)
-/// * `r` - Light radius/range
+/// * `r` - Light radius/range (clamped to MAX_DIST)
 /// * `x` - World X coordinate
 /// * `y` - World Y coordinate
 ///
@@ -311,17 +290,31 @@ fn hsv2rgb(h: u8, s: u8, v: u8) -> Color {
 /// This function is thread-safe thanks to the RwLock protecting the light map.
 /// Multiple lights can be updated concurrently from different threads.
 pub fn update_or_add_light(id: u8, r: i16, x: i16, y: i16) -> *const Color {
+    // Clamp radius to maximum supported distance
+    let clamped_r = r.min(MAX_DIST as i16).max(1);
+
     // Attempt to get write access to the light map
     if let Ok(mut light_map) = LIGHT_MAP.write() {
-        // Get existing light or create a new one
-        let light = light_map.entry(id).or_insert_with(|| Light::new((x, y), r));
+        // Check if we need to create a new light or update existing
+        let needs_new_light = if let Some(existing_light) = light_map.get(&id) {
+            existing_light.r != clamped_r
+        } else {
+            true
+        };
 
-        // Update light properties
-        light.pos = (x, y);
-        light.r = r;
+        if needs_new_light {
+            // Create new light with correct radius
+            light_map.insert(id, Light::new((x, y), clamped_r));
+        }
 
-        // Recalculate and return the updated canvas
-        light.update()
+        // Get the light and update its properties
+        if let Some(light) = light_map.get_mut(&id) {
+            light.pos = (x, y);
+            light.r = clamped_r;
+            light.update()
+        } else {
+            std::ptr::null()
+        }
     } else {
         // Return null pointer if we can't acquire the lock
         std::ptr::null()
@@ -335,7 +328,7 @@ pub fn update_or_add_light(id: u8, r: i16, x: i16, y: i16) -> *const Color {
 /// one-time calculation that pre-computes all possible ray trajectories.
 ///
 /// # Performance Note
-/// The initialization involves computing ray trajectories for 60 distances × 360 angles,
+/// The initialization involves computing ray trajectories for MAX_DIST distances × ANGLES angles,
 /// which can take a noticeable amount of time on slower devices. Consider calling
 /// this during a loading screen or startup phase.
 pub fn init() {
