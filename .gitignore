@@ -1,0 +1,3 @@
+*.wat
+node_modules
+build
