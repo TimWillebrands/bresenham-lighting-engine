@@ -1,31 +1,250 @@
-<html>
+<!doctype html>
+<html lang="en">
     <head>
-        <title>Hello C3</title>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Bresenham Lighting Engine - Web Demo</title>
+        <link
+            rel="icon"
+            href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💡</text></svg>"
+        />
         <style>
             body {
-                margin: 8px;
+                margin: 0;
+                padding: 16px;
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    sans-serif;
+                background: #1a1a1a;
+                color: #ffffff;
             }
+
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+            }
+
+            h1 {
+                text-align: center;
+                margin-bottom: 24px;
+                color: #00ff88;
+            }
+
+            .controls {
+                background: #2a2a2a;
+                padding: 16px;
+                border-radius: 8px;
+                margin-bottom: 16px;
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 16px;
+            }
+
+            .control-group {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+            }
+
+            label {
+                font-weight: 500;
+                color: #cccccc;
+            }
+
+            input[type="range"] {
+                width: 100%;
+                height: 24px;
+                background: #444;
+                border-radius: 12px;
+                outline: none;
+                -webkit-appearance: none;
+            }
+
+            input[type="range"]::-webkit-slider-thumb {
+                -webkit-appearance: none;
+                width: 20px;
+                height: 20px;
+                background: #00ff88;
+                border-radius: 50%;
+                cursor: pointer;
+            }
+
+            input[type="range"]::-moz-range-thumb {
+                width: 20px;
+                height: 20px;
+                background: #00ff88;
+                border-radius: 50%;
+                cursor: pointer;
+                border: none;
+            }
+
+            .canvas-container {
+                position: relative;
+                width: 100%;
+                max-width: 540px;
+                margin: 0 auto;
+                background: #000;
+                border-radius: 8px;
+                overflow: hidden;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+            }
+
             canvas {
+                display: block;
+                width: 100%;
                 height: auto;
-                width: calc(100% - 16px);
                 image-rendering: pixelated;
+                image-rendering: -moz-crisp-edges;
+                image-rendering: crisp-edges;
+            }
+
+            #walls {
                 position: absolute;
+                top: 0;
+                left: 0;
+                opacity: 0.8;
+                cursor: crosshair;
+            }
+
+            .instructions {
+                background: #2a2a2a;
+                padding: 16px;
+                border-radius: 8px;
+                margin-top: 16px;
+                font-size: 14px;
+                line-height: 1.5;
+            }
+
+            .instructions h3 {
+                margin-top: 0;
+                color: #00ff88;
+            }
+
+            .instructions ul {
+                margin: 8px 0;
+                padding-left: 20px;
+            }
+
+            .performance {
+                background: #2a2a2a;
+                padding: 12px;
+                border-radius: 8px;
+                margin-top: 16px;
+                font-family: "Courier New", monospace;
+                font-size: 12px;
+            }
+
+            .error {
+                background: #662222;
+                border: 1px solid #aa4444;
+                padding: 12px;
+                border-radius: 8px;
+                margin-top: 16px;
+                display: none;
+            }
+
+            .loading {
+                text-align: center;
+                padding: 32px;
+                color: #888;
             }
         </style>
     </head>
     <body>
-        <form id='controls'>
-            <label for="x">x</label>
-            <input type="range" value="80" min="0" max="180" name="x"></input>
-            <label for="y">y</label>
-            <input type="range" value="80" min="0" max="180" name="y"></input>
-            <label for="radius">radius</label>
-            <input type="range" value="40" min="0" max="60" name="radius"></input>
-        </form>
-        <section class="canvas">
-            <canvas id='game' width='180' height="180"></canvas>
-            <canvas id='walls' width='180' height="180" oncontextmenu="return false;"></canvas>
-        </section>
+        <div class="container">
+            <h1>Bresenham Lighting Engine</h1>
+
+            <div class="loading" id="loading">Loading WASM module...</div>
+
+            <div class="error" id="error">
+                <strong>Error:</strong> <span id="error-message"></span>
+            </div>
+
+            <form id="controls" class="controls" style="display: none">
+                <div class="control-group">
+                    <label for="x"
+                        >Light X Position: <span id="x-value">80</span></label
+                    >
+                    <input
+                        type="range"
+                        value="80"
+                        min="0"
+                        max="180"
+                        name="x"
+                        id="x"
+                    />
+                </div>
+                <div class="control-group">
+                    <label for="y"
+                        >Light Y Position: <span id="y-value">80</span></label
+                    >
+                    <input
+                        type="range"
+                        value="80"
+                        min="0"
+                        max="180"
+                        name="y"
+                        id="y"
+                    />
+                </div>
+                <div class="control-group">
+                    <label for="radius"
+                        >Light Radius: <span id="radius-value">40</span></label
+                    >
+                    <input
+                        type="range"
+                        value="40"
+                        min="5"
+                        max="60"
+                        name="radius"
+                        id="radius"
+                    />
+                </div>
+            </form>
+
+            <div
+                class="canvas-container"
+                id="canvas-container"
+                style="display: none"
+            >
+                <canvas id="game" width="180" height="180"></canvas>
+                <canvas
+                    id="walls"
+                    width="180"
+                    height="180"
+                    oncontextmenu="return false;"
+                ></canvas>
+            </div>
+
+            <div class="instructions" id="instructions" style="display: none">
+                <h3>Instructions</h3>
+                <ul>
+                    <li>
+                        <strong>Left click + drag</strong> on the canvas to draw
+                        walls (obstacles)
+                    </li>
+                    <li><strong>Right click + drag</strong> to erase walls</li>
+                    <li>
+                        <strong>Middle click</strong> to move the light to that
+                        position
+                    </li>
+                    <li>Use the sliders above to adjust light properties</li>
+                </ul>
+                <p>
+                    Watch how the CPU-based ray casting creates realistic
+                    lighting and shadows!
+                </p>
+            </div>
+
+            <div class="performance" id="performance" style="display: none">
+                <div>Performance Metrics:</div>
+                <div id="perf-init">Initialization: -</div>
+                <div id="perf-update">Light Update: -</div>
+                <div id="perf-canvas">Canvas Render: -</div>
+                <div id="perf-fps">FPS: -</div>
+            </div>
+        </div>
+
         <script type="module" src="./script.mjs"></script>
     </body>
 </html>

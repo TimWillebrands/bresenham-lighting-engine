@@ -4,9 +4,7 @@
   "description": "When your GPU is too mainstream and you want to do lighting the hard way™️",
   "main": "index.js",
   "scripts": {
-    "build": "wasm-pack build --target web --out-dir examples/web-demo/pkg",
-    "serve": "serve examples/web-demo",
-    "dev": "concurrently \"cargo watch -s \\\"bun run build\\\"\" \"bun run serve\""
+    "build:wasm": "wasm-pack build --target web --out-dir examples/web-demo/pkg"
   },
   "keywords": [
     "bresenham",
