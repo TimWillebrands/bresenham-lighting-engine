@@ -1,24 +1,24 @@
 # bresenham-lighting-engine
 
-> When your GPU is too mainstream and you want to do lighting the hard way™️
+[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen)](https://TimWillebrands.github.io/bresenham-lighting-engine/)
 
 ## What is this madness?
 
-This is a lighting engine that said "nah fam" to GPU shaders and decided to use **Bresenham line algorithms** for ray casting instead. Why? Because sometimes you gotta touch grass (or in this case, touch CPU cycles).
+This is a lighting engine that said "nah fam" to GPU shaders and decided to use **Bresenham line algorithms** for ray casting instead.
 
 The core idea is simple but kinda genius:
 - Cast rays using classic line-drawing algorithms
-- Calculate shadows by checking when rays get yeeted by obstacles  
+- Calculate shadows by checking when rays get yeeted by obstacles
 - Apply light falloff based on distance
 - Render everything with HSV color space because we're fancy like that
 
 ## Features that actually slap
 
-✨ **Zero GPU dependency** - Your integrated graphics can take a nap  
-🚀 **WASM-ready** - Runs in browsers without breaking a sweat  
-📦 **Minimalistic AF** - No bloated dependencies, just pure algorithmic goodness  
-🎯 **Portable** - Will eventually work in native game engines (Godot gang rise up)  
-⚡ **Performant** - Surprisingly fast for CPU-based lighting (trust the math)  
+✨ **Zero GPU dependency** - Your integrated graphics can take a nap
+🚀 **WASM-ready** - Runs in browsers without breaking a sweat
+📦 **Minimalistic AF** - No bloated dependencies, just pure algorithmic goodness
+🎯 **Portable** - Will perhaps work in native game engines
+⚡ **Performant** - Surprisingly fast for CPU-based lighting
 
 ## Quick Start (for the impatient)
 
@@ -31,13 +31,6 @@ Build the WASM module:
 ```bash
 wasm-pack build --target web
 ```
-
-Run the demo:
-```bash
-bun run index.js
-```
-
-Then open `index.html` in your browser and watch those sweet, sweet rays do their thing.
 
 ## The Vibe
 
@@ -52,7 +45,7 @@ Perfect for:
 ## Roadmap (aka "Things We'll Probably Do")
 
 - [x] Basic WASM implementation that doesn't crash
-- [x] Ray casting with proper shadow calculation  
+- [x] Ray casting with proper shadow calculation
 - [ ] Native library bindings (C/C++/whatever)
 - [ ] Godot plugin (because indie devs deserve nice things)
 - [ ] Performance optimizations (SIMD goes brrr)

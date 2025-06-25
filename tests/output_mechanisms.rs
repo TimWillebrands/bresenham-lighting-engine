@@ -480,76 +480,49 @@ mod tests {
         ensure_output_dir()?;
         init_test_environment();
 
-        // Create a realistic scene with a large light (radius 60) and architectural walls
-        // Note: This test temporarily overrides the MAX_DIST limitation by creating
-        // a controlled environment that simulates production conditions
+        // Create a realistic scene using the maximum test radius (10) for true wall interaction
+        // Room dimensions are scaled to work well with radius-10 lights
 
-        // Create room-like walls - imagine a corner room with doorways
-        add_mock_obstacle(20, 10, 80, 10); // Top wall
-        add_mock_obstacle(10, 10, 10, 80); // Left wall
-        add_mock_obstacle(10, 80, 80, 80); // Bottom wall
-        add_mock_obstacle(80, 10, 80, 50); // Right wall (partial - doorway)
+        // Create a medium-sized room with proper proportions for radius-10 lights
+        // Room center at (15,15), walls at distance ~12-15 from center so light actually hits them
+        add_mock_obstacle(5, 5, 25, 5); // Top wall
+        add_mock_obstacle(5, 5, 5, 25); // Left wall
+        add_mock_obstacle(5, 25, 25, 25); // Bottom wall
+        add_mock_obstacle(25, 5, 25, 15); // Right wall (partial - doorway)
 
-        // Interior walls/furniture
-        add_mock_obstacle(30, 30, 60, 30); // Table/counter
-        add_mock_obstacle(30, 30, 30, 40); // Table leg
-        add_mock_obstacle(60, 30, 60, 40); // Table leg
-        add_mock_obstacle(45, 50, 45, 70); // Column/pillar
+        // Interior furniture at distances where radius-10 light will interact
+        add_mock_obstacle(10, 10, 18, 10); // Table/counter - 5-8 units from center
+        add_mock_obstacle(10, 10, 10, 13); // Table leg
+        add_mock_obstacle(18, 10, 18, 13); // Table leg
+        add_mock_obstacle(15, 18, 15, 22); // Column/pillar - 8 units from center
 
-        // Create a large central light source
-        // In test mode, we're limited to radius 5, but we'll create multiple overlapping
-        // lights to simulate a large radius 60 light's effect
-        let main_light_x = 45;
-        let main_light_y = 45;
+        // Position light at room center for optimal wall interaction
+        let main_light_x = 15;
+        let main_light_y = 15;
 
-        // Create concentric lights to simulate a large radius light
-        let light1 = lighting::update_or_add_light(1, 5, main_light_x, main_light_y);
-        let light2 = lighting::update_or_add_light(2, 4, main_light_x - 2, main_light_y - 2);
-        let light3 = lighting::update_or_add_light(3, 4, main_light_x + 2, main_light_y + 2);
-        let light4 = lighting::update_or_add_light(4, 3, main_light_x - 3, main_light_y + 1);
-        let light5 = lighting::update_or_add_light(5, 3, main_light_x + 1, main_light_y - 3);
+        // Use maximum test radius (10) to actually reach the walls
+        let main_light = lighting::update_or_add_light(1, 10, main_light_x, main_light_y);
 
-        // Create the composite scene with a larger canvas to show the full effect
+        // Add secondary lights at corners for enhanced lighting
+        let corner_light1 = lighting::update_or_add_light(2, 8, 8, 8); // Top-left corner
+        let corner_light2 = lighting::update_or_add_light(3, 6, 22, 8); // Top-right corner
+        let corner_light3 = lighting::update_or_add_light(4, 7, 8, 22); // Bottom-left corner
+
         let lights = vec![
             (
-                light1,
-                5 * 2 + 1,
+                main_light,
+                10 * 2 + 1,
                 main_light_x,
                 main_light_y,
-                "Central Light",
+                "Central Light (R10)",
             ),
-            (
-                light2,
-                4 * 2 + 1,
-                main_light_x - 2,
-                main_light_y - 2,
-                "Support Light 1",
-            ),
-            (
-                light3,
-                4 * 2 + 1,
-                main_light_x + 2,
-                main_light_y + 2,
-                "Support Light 2",
-            ),
-            (
-                light4,
-                3 * 2 + 1,
-                main_light_x - 3,
-                main_light_y + 1,
-                "Support Light 3",
-            ),
-            (
-                light5,
-                3 * 2 + 1,
-                main_light_x + 1,
-                main_light_y - 3,
-                "Support Light 4",
-            ),
+            (corner_light1, 8 * 2 + 1, 8, 8, "Corner Light 1 (R8)"),
+            (corner_light2, 6 * 2 + 1, 22, 8, "Corner Light 2 (R6)"),
+            (corner_light3, 7 * 2 + 1, 8, 22, "Corner Light 3 (R7)"),
         ];
 
-        // Create a large composite image (100x100) to show the full room
-        let mut composite = create_composite_image(lights, 100, 100);
+        // Create appropriately sized composite (35x35) for the room
+        let mut composite = create_composite_image(lights, 35, 35);
 
         // Draw the walls/obstacles on the image for visualization
         draw_obstacles_on_image(&mut composite);
@@ -558,23 +531,25 @@ mod tests {
 
         // Also create a comparison version without walls
         clear_mock_obstacles();
-        let light_no_walls = lighting::update_or_add_light(10, 5, main_light_x, main_light_y);
+        let light_no_walls = lighting::update_or_add_light(10, 10, main_light_x, main_light_y);
         let lights_no_walls = vec![(
             light_no_walls,
-            5 * 2 + 1,
+            10 * 2 + 1,
             main_light_x,
             main_light_y,
-            "Light Without Walls",
+            "Light Without Walls (R10)",
         )];
-        let composite_no_walls = create_composite_image(lights_no_walls, 100, 100);
+        let composite_no_walls = create_composite_image(lights_no_walls, 35, 35);
         composite_no_walls.save("test_output/realistic_light_no_walls.png")?;
 
         println!("✓ Generated realistic large light scene with architectural walls");
         println!(
-            "  - realistic_large_light_with_walls.png: Shows light interaction with room walls"
+            "  - realistic_large_light_with_walls.png: Shows radius-10 light interaction with room walls"
         );
         println!("  - realistic_light_no_walls.png: Same light without obstacles for comparison");
-        println!("  - Simulates radius-60 light using overlapping smaller lights due to test constraints");
+        println!(
+            "  - Uses maximum test radius (10) for actual wall interaction and shadow casting"
+        );
 
         Ok(())
     }
@@ -599,52 +574,58 @@ mod tests {
 
         init_test_environment();
 
-        // Create a realistic office/warehouse environment
-        add_mock_obstacle(0, 0, 200, 0); // North wall
-        add_mock_obstacle(0, 0, 0, 150); // West wall
-        add_mock_obstacle(200, 0, 200, 150); // East wall
-        add_mock_obstacle(0, 150, 200, 150); // South wall
+        // Create a realistic office environment scaled for test mode (radius 10 max)
+        // Office dimensions: 50x40 - reasonable for radius-10 lights
+        add_mock_obstacle(5, 5, 45, 5); // North wall
+        add_mock_obstacle(5, 5, 5, 35); // West wall
+        add_mock_obstacle(45, 5, 45, 35); // East wall
+        add_mock_obstacle(5, 35, 45, 35); // South wall
 
-        // Interior architectural elements
-        add_mock_obstacle(50, 20, 50, 130); // Support column
-        add_mock_obstacle(100, 20, 100, 130); // Support column
-        add_mock_obstacle(150, 20, 150, 130); // Support column
+        // Interior architectural elements positioned for light interaction
+        add_mock_obstacle(15, 10, 15, 30); // Support column 1
+        add_mock_obstacle(25, 10, 25, 30); // Support column 2
+        add_mock_obstacle(35, 10, 35, 30); // Support column 3
 
-        // Work areas / furniture
-        add_mock_obstacle(20, 40, 80, 40); // Desk row 1
-        add_mock_obstacle(20, 80, 80, 80); // Desk row 2
-        add_mock_obstacle(120, 40, 180, 40); // Desk row 3
-        add_mock_obstacle(120, 80, 180, 80); // Desk row 4
+        // Work areas / furniture within light range
+        add_mock_obstacle(10, 15, 20, 15); // Desk row 1
+        add_mock_obstacle(10, 25, 20, 25); // Desk row 2
+        add_mock_obstacle(30, 15, 40, 15); // Desk row 3
+        add_mock_obstacle(30, 25, 40, 25); // Desk row 4
 
-        // Meeting room walls
-        add_mock_obstacle(160, 100, 190, 100); // Meeting room north
-        add_mock_obstacle(160, 100, 160, 130); // Meeting room west
-        add_mock_obstacle(190, 100, 190, 130); // Meeting room east
+        // Meeting room in corner
+        add_mock_obstacle(35, 20, 42, 20); // Meeting room north
+        add_mock_obstacle(35, 20, 35, 32); // Meeting room west
+        add_mock_obstacle(42, 20, 42, 32); // Meeting room east
 
-        // In production, this would be a single radius-60 light
-        // For test mode, we simulate it with smaller overlapping lights
-        let main_x = 100;
-        let main_y = 75;
+        // Position lights strategically for maximum wall/obstacle interaction
+        let main_x = 25; // Center of office
+        let main_y = 20;
 
-        // Create the main light source (production would use radius 60)
-        let central_light = lighting::update_or_add_light(1, 5, main_x, main_y);
+        // Use maximum radius (10) for main lighting that will actually reach walls and obstacles
+        let central_light = lighting::update_or_add_light(1, 10, main_x, main_y);
 
-        // Additional accent lighting throughout the space
-        let accent1 = lighting::update_or_add_light(2, 3, 30, 30);
-        let accent2 = lighting::update_or_add_light(3, 3, 170, 30);
-        let accent3 = lighting::update_or_add_light(4, 4, 175, 115); // Meeting room
-        let accent4 = lighting::update_or_add_light(5, 2, 25, 100); // Corner area
+        // Additional accent lighting with substantial radii
+        let accent1 = lighting::update_or_add_light(2, 8, 12, 12); // Work area 1
+        let accent2 = lighting::update_or_add_light(3, 8, 38, 12); // Work area 2
+        let accent3 = lighting::update_or_add_light(4, 7, 38, 26); // Meeting room
+        let accent4 = lighting::update_or_add_light(5, 6, 10, 28); // Corner area
 
         let lights = vec![
-            (central_light, 5 * 2 + 1, main_x, main_y, "Main Overhead"),
-            (accent1, 3 * 2 + 1, 30, 30, "Work Area 1"),
-            (accent2, 3 * 2 + 1, 170, 30, "Work Area 2"),
-            (accent3, 4 * 2 + 1, 175, 115, "Meeting Room"),
-            (accent4, 2 * 2 + 1, 25, 100, "Corner"),
+            (
+                central_light,
+                10 * 2 + 1,
+                main_x,
+                main_y,
+                "Main Overhead (R10)",
+            ),
+            (accent1, 8 * 2 + 1, 12, 12, "Work Area 1 (R8)"),
+            (accent2, 8 * 2 + 1, 38, 12, "Work Area 2 (R8)"),
+            (accent3, 7 * 2 + 1, 38, 26, "Meeting Room (R7)"),
+            (accent4, 6 * 2 + 1, 10, 28, "Corner (R6)"),
         ];
 
-        // Create large-scale composite (200x150 simulates production scale)
-        let mut composite = create_composite_image(lights, 200, 150);
+        // Create appropriately sized composite (50x40) for test mode
+        let mut composite = create_composite_image(lights, 50, 40);
         draw_obstacles_on_image(&mut composite);
 
         composite.save("test_output/production_scale_office_lighting.png")?;
@@ -653,35 +634,116 @@ mod tests {
         clear_mock_obstacles();
 
         // Same obstacles but different lighting mood
-        add_mock_obstacle(0, 0, 200, 0);
-        add_mock_obstacle(0, 0, 0, 150);
-        add_mock_obstacle(200, 0, 200, 150);
-        add_mock_obstacle(0, 150, 200, 150);
-        add_mock_obstacle(50, 20, 50, 130);
-        add_mock_obstacle(100, 20, 100, 130);
-        add_mock_obstacle(150, 20, 150, 130);
+        add_mock_obstacle(5, 5, 45, 5);
+        add_mock_obstacle(5, 5, 5, 35);
+        add_mock_obstacle(45, 5, 45, 35);
+        add_mock_obstacle(5, 35, 45, 35);
+        add_mock_obstacle(15, 10, 15, 30);
+        add_mock_obstacle(25, 10, 25, 30);
+        add_mock_obstacle(35, 10, 35, 30);
 
-        // Night lighting - more focused, less ambient
-        let night_main = lighting::update_or_add_light(10, 4, main_x, main_y);
-        let night_accent1 = lighting::update_or_add_light(11, 2, 175, 115);
-        let night_accent2 = lighting::update_or_add_light(12, 1, 30, 30);
+        // Night lighting - more focused, less ambient but still large enough to interact with walls
+        let night_main = lighting::update_or_add_light(10, 8, main_x, main_y); // Reduced but still substantial
+        let night_accent1 = lighting::update_or_add_light(11, 5, 38, 26); // Meeting room
+        let night_accent2 = lighting::update_or_add_light(12, 4, 12, 12); // Security corner
 
         let night_lights = vec![
-            (night_main, 4 * 2 + 1, main_x, main_y, "Night Main"),
-            (night_accent1, 2 * 2 + 1, 175, 115, "Night Meeting Room"),
-            (night_accent2, 1 * 2 + 1, 30, 30, "Night Security"),
+            (night_main, 8 * 2 + 1, main_x, main_y, "Night Main (R8)"),
+            (night_accent1, 5 * 2 + 1, 38, 26, "Night Meeting Room (R5)"),
+            (night_accent2, 4 * 2 + 1, 12, 12, "Night Security (R4)"),
         ];
 
-        let mut night_composite = create_composite_image(night_lights, 200, 150);
+        let mut night_composite = create_composite_image(night_lights, 50, 40);
         draw_obstacles_on_image(&mut night_composite);
 
         night_composite.save("test_output/production_scale_night_lighting.png")?;
 
         println!("✓ Generated production-scale lighting demonstrations");
-        println!("  - production_scale_office_lighting.png: Full office lighting");
-        println!("  - production_scale_night_lighting.png: Night/security lighting mode");
-        println!("  - Showcases architectural lighting with complex obstacle interactions");
-        println!("⚠️  Note: Test mode limitations apply - production build would show full radius-60 effects");
+        println!("  - production_scale_office_lighting.png: Full office lighting with radius 6-10 lights");
+        println!("  - production_scale_night_lighting.png: Night/security lighting mode with radius 4-8 lights");
+        println!("  - Showcases architectural lighting with actual wall and obstacle shadow interactions");
+        println!("  - Room scaled appropriately for test mode MAX_DIST (10) to show realistic lighting behavior");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_radius_comparison_realistic_scenarios() -> Result<(), Box<dyn std::error::Error>> {
+        ensure_output_dir()?;
+        init_test_environment();
+
+        // Create a scenario that clearly shows the difference between small and large radii
+        // This demonstrates why the original complaint about "radius too small" was valid
+
+        // Create a medium room where the difference will be obvious
+        add_mock_obstacle(8, 8, 22, 8); // Top wall
+        add_mock_obstacle(8, 8, 8, 22); // Left wall
+        add_mock_obstacle(8, 22, 22, 22); // Bottom wall
+        add_mock_obstacle(22, 8, 22, 22); // Right wall
+
+        // Add furniture that's positioned to show shadow differences
+        add_mock_obstacle(12, 12, 18, 12); // Table
+        add_mock_obstacle(15, 15, 15, 18); // Chair
+
+        let center_x = 15;
+        let center_y = 15;
+
+        // Test 1: Small radius (3) - the old approach
+        let small_light = lighting::update_or_add_light(1, 3, center_x, center_y);
+        let small_img = canvas_to_image(small_light, 3 * 2 + 1);
+        // Extend canvas to show room context
+        let mut small_room_img = image::ImageBuffer::new(30, 30);
+        // Place the small light canvas in the center of the larger room image
+        for y in 0..(3 * 2 + 1) {
+            for x in 0..(3 * 2 + 1) {
+                let light_pixel = small_img.get_pixel(x as u32, y as u32);
+                let room_x = (center_x - 3) + x as i16;
+                let room_y = (center_y - 3) + y as i16;
+                if room_x >= 0 && room_y >= 0 && (room_x as u32) < 30 && (room_y as u32) < 30 {
+                    small_room_img.put_pixel(room_x as u32, room_y as u32, *light_pixel);
+                }
+            }
+        }
+        draw_obstacles_on_image(&mut small_room_img);
+        small_room_img.save("test_output/radius_comparison_small_r3.png")?;
+
+        // Test 2: Large radius (10) - the improved approach
+        clear_mock_obstacles();
+        add_mock_obstacle(8, 8, 22, 8); // Top wall
+        add_mock_obstacle(8, 8, 8, 22); // Left wall
+        add_mock_obstacle(8, 22, 22, 22); // Bottom wall
+        add_mock_obstacle(22, 8, 22, 22); // Right wall
+        add_mock_obstacle(12, 12, 18, 12); // Table
+        add_mock_obstacle(15, 15, 15, 18); // Chair
+
+        let large_light = lighting::update_or_add_light(2, 10, center_x, center_y);
+        let mut large_room_img = canvas_to_image(large_light, 10 * 2 + 1);
+        draw_obstacles_on_image(&mut large_room_img);
+        large_room_img.save("test_output/radius_comparison_large_r10.png")?;
+
+        // Test 3: Side-by-side comparison without obstacles to show light coverage
+        clear_mock_obstacles();
+        let small_no_walls = lighting::update_or_add_light(3, 3, 10, 15);
+        let large_no_walls = lighting::update_or_add_light(4, 10, 20, 15);
+
+        let comparison_lights = vec![
+            (small_no_walls, 3 * 2 + 1, 10, 15, "Small R3"),
+            (large_no_walls, 10 * 2 + 1, 20, 15, "Large R10"),
+        ];
+
+        let comparison_img = create_composite_image(comparison_lights, 35, 30);
+        comparison_img.save("test_output/radius_comparison_side_by_side.png")?;
+
+        println!(
+            "✓ Generated radius comparison images demonstrating the importance of larger radii"
+        );
+        println!("  - radius_comparison_small_r3.png: Shows how small radius barely reaches walls");
+        println!(
+            "  - radius_comparison_large_r10.png: Shows proper wall interaction with large radius"
+        );
+        println!(
+            "  - radius_comparison_side_by_side.png: Side-by-side comparison of coverage areas"
+        );
 
         Ok(())
     }
@@ -702,10 +764,17 @@ mod tests {
         println!("• minimum_light.png - Smallest possible light");
         println!("• maximum_light.png - Largest light within test limits");
         println!("• heavily_blocked_light.png - Light with nearby obstacles");
-        println!("• realistic_large_light_with_walls.png - Large-scale room lighting with walls");
+        println!("• realistic_large_light_with_walls.png - Properly scaled room lighting with radius-10 lights");
         println!("• realistic_light_no_walls.png - Same scene without walls for comparison");
-        println!("• production_scale_office_lighting.png - Large office/warehouse lighting (production demo)");
+        println!("• production_scale_office_lighting.png - Office lighting with appropriate radius scaling");
         println!("• production_scale_night_lighting.png - Night mode lighting scenario");
+        println!("• radius_comparison_small_r3.png - Shows inadequate coverage with small radius");
+        println!(
+            "• radius_comparison_large_r10.png - Shows proper wall interaction with large radius"
+        );
+        println!(
+            "• radius_comparison_side_by_side.png - Direct comparison of light coverage areas"
+        );
         println!("\nThese images provide visual feedback for:");
         println!("✓ Individual light rendering");
         println!("✓ Multi-light composition");
@@ -713,10 +782,11 @@ mod tests {
         println!("✓ Light falloff and color gradients");
         println!("✓ Edge cases and boundary conditions");
         println!("✓ Animation and movement effects");
-        println!("✓ Realistic architectural lighting scenarios");
+        println!("✓ Realistic architectural lighting scenarios with proper radius scaling");
         println!("✓ Large-scale room and building interior lighting");
         println!("✓ Production-scale office and commercial lighting");
         println!("✓ Day/night lighting mode comparisons");
+        println!("✓ Radius size impact on realistic lighting scenarios");
         println!("\nUse these images to verify lighting behavior and debug issues!");
     }
 }

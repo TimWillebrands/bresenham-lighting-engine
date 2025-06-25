@@ -35,12 +35,12 @@ const perfMetrics = {
   fps: 0,
 };
 
-// Wall data storage (simple pixel-based for demo)
-const wallData = new Uint8Array(180 * 180);
+// Wall data storage - use a simple in-memory structure for GitHub Pages
+const wallPixels = new Set();
 
-// IsBlocked function that WASM will call
+// Enhanced IsBlocked function for static deployment
 globalThis.IsBlocked = function (x0, y0, x1, y1) {
-  // Simple line-walking algorithm to check if path is blocked
+  // Simple line-walking algorithm using Bresenham's line algorithm
   const dx = Math.abs(x1 - x0);
   const dy = Math.abs(y1 - y0);
   const sx = x0 < x1 ? 1 : -1;
@@ -56,11 +56,22 @@ globalThis.IsBlocked = function (x0, y0, x1, y1) {
       return false;
     }
 
-    // Check if this pixel is a wall
-    const pixelData = wallsCtx.getImageData(x, y, 1, 1).data;
-    if (pixelData[3] > 128) {
-      // If alpha > 128, consider it a wall
+    // Check if this pixel is a wall using our in-memory set
+    const pixelKey = `${x},${y}`;
+    if (wallPixels.has(pixelKey)) {
       return true;
+    }
+
+    // Fallback: check canvas data if available
+    try {
+      const pixelData = wallsCtx.getImageData(x, y, 1, 1).data;
+      if (pixelData[3] > 128) {
+        // If alpha > 128, consider it a wall and cache it
+        wallPixels.add(pixelKey);
+        return true;
+      }
+    } catch (e) {
+      // Canvas access might fail in some scenarios, continue with memory check
     }
 
     // If we've reached the destination, no blocking found
@@ -82,15 +93,20 @@ globalThis.IsBlocked = function (x0, y0, x1, y1) {
   return false;
 };
 
-// Log function for debugging
-globalThis.Log = function (message) {
+// Enhanced log function for debugging (with console grouping)
+globalThis.log_from_js = function (message) {
   console.log("[WASM]", message);
 };
+
+// Simplified console.log_from_js for compatibility
+globalThis.console = globalThis.console || {};
+globalThis.console.log_from_js = globalThis.log_from_js;
 
 function showError(message) {
   errorMessage.textContent = message;
   errorDiv.style.display = "block";
   loadingDiv.style.display = "none";
+  console.error("Demo Error:", message);
 }
 
 function hideLoading() {
@@ -119,16 +135,33 @@ function updateControlLabels() {
 }
 
 function updateLighting() {
-  if (!wasmModule) return;
+  if (!wasmModule) {
+    console.warn("WASM module not initialized");
+    return;
+  }
 
   const formData = new FormData(controlsForm);
   const x = parseInt(formData.get("x"));
   const y = parseInt(formData.get("y"));
   const radius = parseInt(formData.get("radius"));
 
+  // Validate inputs
+  if (isNaN(x) || isNaN(y) || isNaN(radius)) {
+    console.warn("Invalid input values");
+    return;
+  }
+
   // Time the light update
   const updateStart = performance.now();
-  const canvasPtr = put(0, radius, x, y);
+  let canvasPtr;
+
+  try {
+    canvasPtr = put(0, radius, x, y);
+  } catch (error) {
+    console.error("Error calling put():", error);
+    return;
+  }
+
   const updateEnd = performance.now();
   perfMetrics.update = updateEnd - updateStart;
 
@@ -140,47 +173,56 @@ function updateLighting() {
   // Time the canvas rendering
   const canvasStart = performance.now();
 
-  // Clear the canvas
-  ctx.clearRect(0, 0, 180, 180);
+  try {
+    // Clear the canvas
+    ctx.clearRect(0, 0, 180, 180);
 
-  // Get the light canvas data from WASM memory
-  const lightSize = radius * 2 + 1;
+    // Get the light canvas data from WASM memory
+    const lightSize = radius * 2 + 1;
 
-  if (canvasPtr === 0) {
-    console.warn("Light update returned null pointer");
-    return;
+    // Access WASM memory through the initialized module
+    if (!wasmModule || !wasmModule.memory) {
+      console.warn("WASM memory not available");
+      return;
+    }
+
+    const lightData = new Uint8ClampedArray(
+      wasmModule.memory.buffer,
+      canvasPtr,
+      lightSize * lightSize * 4,
+    );
+
+    // Create and draw the light image
+    const imageData = new ImageData(lightData, lightSize, lightSize);
+    ctx.putImageData(
+      imageData,
+      x - Math.floor(lightSize / 2),
+      y - Math.floor(lightSize / 2),
+    );
+
+    // Draw black background behind the light
+    ctx.globalCompositeOperation = "destination-over";
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, 180, 180);
+    ctx.globalCompositeOperation = "source-over";
+
+  } catch (error) {
+    console.error("Error rendering canvas:", error);
   }
-
-  // Access WASM memory through the initialized module
-  if (!wasmModule || !wasmModule.memory) {
-    console.warn("WASM memory not available");
-    return;
-  }
-
-  const lightData = new Uint8ClampedArray(
-    wasmModule.memory.buffer,
-    canvasPtr,
-    lightSize * lightSize * 4,
-  );
-
-  // Create and draw the light image
-  const imageData = new ImageData(lightData, lightSize, lightSize);
-  ctx.putImageData(
-    imageData,
-    x - Math.floor(lightSize / 2),
-    y - Math.floor(lightSize / 2),
-  );
-
-  // Draw black background behind the light
-  ctx.globalCompositeOperation = "destination-over";
-  ctx.fillStyle = "black";
-  ctx.fillRect(0, 0, 180, 180);
-  ctx.globalCompositeOperation = "source-over";
 
   const canvasEnd = performance.now();
   perfMetrics.canvas = canvasEnd - canvasStart;
 
   updatePerformanceDisplay();
+}
+
+function updateWallPixel(x, y, isWall) {
+  const pixelKey = `${x},${y}`;
+  if (isWall) {
+    wallPixels.add(pixelKey);
+  } else {
+    wallPixels.delete(pixelKey);
+  }
 }
 
 function drawWall(ev) {
@@ -200,16 +242,25 @@ function drawWall(ev) {
     const isErasing = ev.buttons === 2;
     const color = isErasing ? "rgba(0,0,0,0)" : "rgba(255,255,255,255)";
 
-    // Draw a small brush
+    // Draw a small brush (3x3 pixels for better visibility)
     wallsCtx.fillStyle = color;
-    wallsCtx.fillRect(x - 1, y - 1, 3, 3);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const brushX = x + dx;
+        const brushY = y + dy;
+        if (brushX >= 0 && brushX < 180 && brushY >= 0 && brushY < 180) {
+          wallsCtx.fillRect(brushX, brushY, 1, 1);
+          updateWallPixel(brushX, brushY, !isErasing);
+        }
+      }
+    }
 
     // Update lighting
     updateLighting();
   }
 
   if (ev.buttons === 4) {
-    // Middle mouse button
+    // Middle mouse button - move light
     const x = Math.floor(ev.offsetX * scaleX);
     const y = Math.floor(ev.offsetY * scaleY);
 
@@ -237,16 +288,64 @@ function calculateFPS() {
   animationId = requestAnimationFrame(calculateFPS);
 }
 
+// Enhanced error handling for WASM loading
+async function loadWasmModule() {
+  try {
+    // Try to load the WASM module with enhanced error handling
+    console.log("Loading WASM module...");
+
+    // Check if we're running in a secure context (required for some WASM features)
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      console.warn("Not running in secure context - some features may be limited");
+    }
+
+    wasmModule = await init();
+
+    if (!wasmModule) {
+      throw new Error("WASM module initialization returned null");
+    }
+
+    if (!wasmModule.memory) {
+      throw new Error("WASM module memory not available");
+    }
+
+    console.log("WASM module loaded successfully");
+    console.log("Memory buffer size:", wasmModule.memory.buffer.byteLength);
+
+    return wasmModule;
+
+  } catch (error) {
+    console.error("Failed to load WASM module:", error);
+
+    // Provide helpful error messages for common issues
+    if (error.message.includes("fetch")) {
+      throw new Error("Failed to fetch WASM file. Make sure the server is running and files are accessible.");
+    } else if (error.message.includes("compile")) {
+      throw new Error("Failed to compile WASM module. The WASM file may be corrupted.");
+    } else if (error.message.includes("instantiate")) {
+      throw new Error("Failed to instantiate WASM module. Check browser compatibility.");
+    }
+
+    throw error;
+  }
+}
+
 async function initializeDemo() {
   try {
-    // Initialize WASM module
+    console.log("🚀 Initializing Bresenham Lighting Engine Demo");
+
+    // Check browser compatibility
+    if (typeof WebAssembly === 'undefined') {
+      throw new Error("WebAssembly is not supported in this browser");
+    }
+
+    // Initialize WASM module with timing
     const initStart = performance.now();
-    wasmModule = await init();
+    await loadWasmModule();
     const initEnd = performance.now();
     perfMetrics.init = initEnd - initStart;
 
-    console.log("WASM module initialized successfully");
-    console.log("WASM module has memory:", !!wasmModule.memory);
+    console.log(`✅ WASM initialization completed in ${perfMetrics.init.toFixed(2)}ms`);
 
     // Set up event listeners
     controlsForm.addEventListener("input", function (ev) {
@@ -254,11 +353,25 @@ async function initializeDemo() {
       updateLighting();
     });
 
+    // Enhanced pointer events for better touch support
     wallsCanvas.addEventListener("pointermove", drawWall);
     wallsCanvas.addEventListener("pointerdown", drawWall);
+    wallsCanvas.addEventListener("touchstart", (e) => e.preventDefault());
+    wallsCanvas.addEventListener("touchmove", (e) => e.preventDefault());
 
     // Prevent context menu on right click
     wallsCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // Add keyboard shortcuts
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "c" && e.ctrlKey) {
+        // Ctrl+C: Clear walls
+        wallsCtx.clearRect(0, 0, 180, 180);
+        wallPixels.clear();
+        updateLighting();
+        e.preventDefault();
+      }
+    });
 
     // Initial setup
     updateControlLabels();
@@ -271,12 +384,46 @@ async function initializeDemo() {
     lastFrameTime = performance.now();
     calculateFPS();
 
-    console.log("Demo initialized successfully");
+    console.log("🎉 Demo initialized successfully!");
+    console.log("💡 Tips:");
+    console.log("  - Left click + drag: Draw walls");
+    console.log("  - Right click + drag: Erase walls");
+    console.log("  - Middle click: Move light");
+    console.log("  - Ctrl+C: Clear all walls");
+
   } catch (error) {
     console.error("Failed to initialize demo:", error);
     showError(`Failed to initialize: ${error.message}`);
+
+    // Add some troubleshooting info
+    console.log("🔧 Troubleshooting info:");
+    console.log("  - Browser:", navigator.userAgent);
+    console.log("  - WebAssembly support:", typeof WebAssembly !== 'undefined');
+    console.log("  - Secure context:", window.isSecureContext);
+    console.log("  - Location:", window.location.href);
   }
 }
 
-// Start the demo when the page loads
-initializeDemo();
+// Enhanced startup with better error handling
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeDemo);
+} else {
+  // DOM is already loaded
+  initializeDemo();
+}
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+  if (animationId) {
+    cancelAnimationFrame(animationId);
+  }
+});
+
+// Export for debugging
+window.demoDebug = {
+  wasmModule,
+  perfMetrics,
+  wallPixels,
+  updateLighting,
+  fps: () => fps
+};

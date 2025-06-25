@@ -74,12 +74,15 @@ All images are saved to `test_output/` directory:
 - `complex_scene.png` - Multiple lights with various obstacles in a realistic layout
 
 ### Realistic Lighting Scenarios
-- `realistic_large_light_with_walls.png` - Large-scale room lighting with architectural walls
+- `realistic_large_light_with_walls.png` - Room lighting with radius-10 lights properly scaled for wall interaction
 - `realistic_light_no_walls.png` - Same scene without walls for comparison
+- `radius_comparison_small_r3.png` - Demonstrates inadequate coverage with small radius lights
+- `radius_comparison_large_r10.png` - Shows proper wall interaction with appropriately sized lights
+- `radius_comparison_side_by_side.png` - Direct visual comparison of light coverage areas
 
 ### Production-Scale Demonstrations
-- `production_scale_office_lighting.png` - Large office/warehouse lighting simulation
-- `production_scale_night_lighting.png` - Night/security lighting mode
+- `production_scale_office_lighting.png` - Office lighting with radius 6-10 lights scaled for proper obstacle interaction
+- `production_scale_night_lighting.png` - Night/security lighting mode with radius 4-8 lights
 
 ## Technical Details
 
@@ -91,9 +94,10 @@ The test system includes a mock obstacle detection system that replaces the WASM
 
 ### Test Constraints
 Due to test mode limitations:
-- Maximum light radius: ~5 (vs 60 in production)
+- Maximum light radius: 10 (vs 60 in production) 
 - Ray angle resolution: 36 angles (vs 360 in production)
-- Small canvas sizes to prevent stack overflow
+- Smaller canvas sizes to prevent stack overflow
+- **Important**: Tests now use radius 6-10 for realistic wall interaction scenarios
 
 ### Color Representation
 - **Hue**: Determined by ray angle (creates rainbow effect)
@@ -120,10 +124,11 @@ Due to test mode limitations:
 - **Independent Shadows**: Each light casts its own shadows
 
 ### Realistic Scenarios
-- **Architectural Walls**: Sharp shadow boundaries from room walls and furniture
-- **Large-Scale Lighting**: Simulated radius-60 lighting effects using overlapping smaller lights
-- **Production Environments**: Office, warehouse, and commercial lighting setups
-- **Day/Night Modes**: Different lighting intensities for various scenarios
+- **Architectural Walls**: Sharp shadow boundaries from room walls and furniture with proper light-to-wall interaction
+- **Properly Scaled Lighting**: Uses maximum test radius (10) for actual wall interaction instead of inadequate small radii
+- **Production Environments**: Office, warehouse, and commercial lighting setups with appropriate room scaling
+- **Day/Night Modes**: Different lighting intensities (radius 4-10) for various scenarios
+- **Radius Impact Demonstration**: Clear visual comparison showing why larger radii are essential for realistic scenarios
 
 ## Troubleshooting
 
@@ -140,13 +145,15 @@ RUST_MIN_STACK=8388608 cargo test --test output_mechanisms
 
 ### Missing Obstacle Effects
 - Verify obstacles were added with `add_mock_obstacle()`
-- Check obstacle coordinates are within the light's range
+- Check obstacle coordinates are within the light's range (now up to radius 10)
 - Ensure obstacles intersect the light rays
+- **Note**: Use larger radii (6-10) for realistic wall interaction - radius 3-5 may be too small to reach room walls
 
 ### Image Artifacts
 - Small canvas sizes in test mode may cause pixelation
 - Very close obstacles may cause unexpected shadow patterns
 - Light positions near canvas edges may clip
+- **Radius too small**: If lights don't seem to interact with walls, increase radius to 8-10 for realistic scenarios
 
 ## Integration with CI/CD
 
@@ -180,3 +187,8 @@ To add new test scenarios:
 - PNG compression is fast for the small test images
 - Most time is spent in lighting calculations, not image generation
 - Tests are CPU-bound, suitable for parallel execution
+- Larger radii (8-10) may increase computation time but provide more realistic results
+
+## Design Notes
+
+**Important**: Earlier versions of these tests used very small light radii (3-5) which resulted in unrealistic scenarios where lights barely interacted with room walls. The tests have been updated to use larger radii (6-10) within the test mode constraints to demonstrate proper wall interaction and shadow casting. This provides much more realistic visual feedback for development and debugging.

@@ -3,79 +3,161 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Bresenham Lighting Engine - Web Demo</title>
+        <title>Bresenham Lighting Engine - Interactive Demo</title>
         <link
             rel="icon"
             href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💡</text></svg>"
         />
+        <meta
+            name="description"
+            content="Interactive WebAssembly demo of a CPU-based 2D lighting engine using Bresenham's line algorithm for ray casting"
+        />
+        <meta name="author" content="Bresenham Lighting Engine" />
+        <meta
+            name="keywords"
+            content="WebAssembly, Rust, Lighting, Ray Casting, Bresenham, CPU, 2D Graphics"
+        />
+
+        <!-- GitHub Pages optimization -->
+        <meta name="robots" content="index, follow" />
+        <meta
+            property="og:title"
+            content="Bresenham Lighting Engine - Interactive Demo"
+        />
+        <meta
+            property="og:description"
+            content="Real-time CPU-based 2D lighting with WebAssembly"
+        />
+        <meta property="og:type" content="website" />
+
         <style>
+            :root {
+                --bg-primary: #1a1a1a;
+                --bg-secondary: #2a2a2a;
+                --text-primary: #ffffff;
+                --text-secondary: #cccccc;
+                --accent: #00ff88;
+                --accent-hover: #00cc6a;
+                --error: #ff4444;
+                --warning: #ffaa00;
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
             body {
                 margin: 0;
                 padding: 16px;
                 font-family:
                     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                    sans-serif;
-                background: #1a1a1a;
-                color: #ffffff;
+                    "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+                background: var(--bg-primary);
+                color: var(--text-primary);
+                line-height: 1.6;
             }
 
             .container {
-                max-width: 800px;
+                max-width: 900px;
                 margin: 0 auto;
             }
 
             h1 {
                 text-align: center;
                 margin-bottom: 24px;
-                color: #00ff88;
+                color: var(--accent);
+                font-size: clamp(1.8rem, 4vw, 2.5rem);
+                text-shadow: 0 0 10px rgba(0, 255, 136, 0.3);
+            }
+
+            .header-info {
+                text-align: center;
+                margin-bottom: 24px;
+                color: var(--text-secondary);
+                font-size: 0.9rem;
+            }
+
+            .header-info a {
+                color: var(--accent);
+                text-decoration: none;
+            }
+
+            .header-info a:hover {
+                color: var(--accent-hover);
+                text-decoration: underline;
             }
 
             .controls {
-                background: #2a2a2a;
-                padding: 16px;
-                border-radius: 8px;
+                background: var(--bg-secondary);
+                padding: 20px;
+                border-radius: 12px;
                 margin-bottom: 16px;
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: 16px;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 20px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
             }
 
             .control-group {
                 display: flex;
                 flex-direction: column;
-                gap: 4px;
+                gap: 8px;
             }
 
             label {
-                font-weight: 500;
-                color: #cccccc;
+                font-weight: 600;
+                color: var(--text-secondary);
+                font-size: 0.9rem;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+
+            .control-value {
+                color: var(--accent);
+                font-weight: 700;
+                font-family: "Courier New", monospace;
             }
 
             input[type="range"] {
                 width: 100%;
-                height: 24px;
+                height: 8px;
                 background: #444;
-                border-radius: 12px;
+                border-radius: 4px;
                 outline: none;
                 -webkit-appearance: none;
+                cursor: pointer;
+                transition: all 0.2s ease;
+            }
+
+            input[type="range"]:hover {
+                background: #555;
             }
 
             input[type="range"]::-webkit-slider-thumb {
                 -webkit-appearance: none;
                 width: 20px;
                 height: 20px;
-                background: #00ff88;
+                background: var(--accent);
                 border-radius: 50%;
                 cursor: pointer;
+                box-shadow: 0 2px 6px rgba(0, 255, 136, 0.3);
+                transition: all 0.2s ease;
+            }
+
+            input[type="range"]::-webkit-slider-thumb:hover {
+                background: var(--accent-hover);
+                transform: scale(1.1);
             }
 
             input[type="range"]::-moz-range-thumb {
                 width: 20px;
                 height: 20px;
-                background: #00ff88;
+                background: var(--accent);
                 border-radius: 50%;
                 cursor: pointer;
                 border: none;
+                box-shadow: 0 2px 6px rgba(0, 255, 136, 0.3);
             }
 
             .canvas-container {
@@ -84,9 +166,10 @@
                 max-width: 540px;
                 margin: 0 auto;
                 background: #000;
-                border-radius: 8px;
+                border-radius: 12px;
                 overflow: hidden;
-                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+                border: 2px solid rgba(0, 255, 136, 0.2);
             }
 
             canvas {
@@ -102,69 +185,250 @@
                 position: absolute;
                 top: 0;
                 left: 0;
-                opacity: 0.8;
+                opacity: 0.9;
                 cursor: crosshair;
+                touch-action: none;
             }
 
             .instructions {
-                background: #2a2a2a;
-                padding: 16px;
-                border-radius: 8px;
+                background: var(--bg-secondary);
+                padding: 20px;
+                border-radius: 12px;
                 margin-top: 16px;
                 font-size: 14px;
-                line-height: 1.5;
+                line-height: 1.6;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
             }
 
             .instructions h3 {
                 margin-top: 0;
-                color: #00ff88;
+                color: var(--accent);
+                font-size: 1.1rem;
             }
 
             .instructions ul {
-                margin: 8px 0;
+                margin: 12px 0;
                 padding-left: 20px;
             }
 
-            .performance {
-                background: #2a2a2a;
+            .instructions li {
+                margin: 8px 0;
+            }
+
+            .instructions strong {
+                color: var(--accent);
+            }
+
+            .instructions .tip {
+                background: rgba(0, 255, 136, 0.1);
                 padding: 12px;
                 border-radius: 8px;
+                margin-top: 12px;
+                border-left: 4px solid var(--accent);
+            }
+
+            .performance {
+                background: var(--bg-secondary);
+                padding: 16px;
+                border-radius: 12px;
                 margin-top: 16px;
                 font-family: "Courier New", monospace;
                 font-size: 12px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+            }
+
+            .performance h4 {
+                margin-top: 0;
+                color: var(--accent);
+                font-family: inherit;
+            }
+
+            .perf-metric {
+                display: flex;
+                justify-content: space-between;
+                margin: 6px 0;
+                padding: 4px 8px;
+                background: rgba(0, 0, 0, 0.3);
+                border-radius: 4px;
+            }
+
+            .perf-value {
+                color: var(--accent);
+                font-weight: bold;
             }
 
             .error {
-                background: #662222;
-                border: 1px solid #aa4444;
-                padding: 12px;
-                border-radius: 8px;
+                background: rgba(255, 68, 68, 0.1);
+                border: 2px solid var(--error);
+                color: var(--error);
+                padding: 16px;
+                border-radius: 12px;
+                margin-top: 16px;
+                display: none;
+            }
+
+            .error strong {
+                color: var(--error);
+            }
+
+            .warning {
+                background: rgba(255, 170, 0, 0.1);
+                border: 2px solid var(--warning);
+                color: var(--warning);
+                padding: 16px;
+                border-radius: 12px;
                 margin-top: 16px;
                 display: none;
             }
 
             .loading {
                 text-align: center;
-                padding: 32px;
-                color: #888;
+                padding: 48px;
+                color: var(--text-secondary);
+                font-size: 1.1rem;
+            }
+
+            .loading-spinner {
+                display: inline-block;
+                width: 32px;
+                height: 32px;
+                border: 3px solid rgba(0, 255, 136, 0.3);
+                border-radius: 50%;
+                border-top-color: var(--accent);
+                animation: spin 1s ease-in-out infinite;
+                margin-bottom: 16px;
+            }
+
+            @keyframes spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+
+            .footer {
+                text-align: center;
+                margin-top: 32px;
+                padding: 20px;
+                color: var(--text-secondary);
+                font-size: 0.9rem;
+                border-top: 1px solid rgba(255, 255, 255, 0.1);
+            }
+
+            .footer a {
+                color: var(--accent);
+                text-decoration: none;
+            }
+
+            .footer a:hover {
+                text-decoration: underline;
+            }
+
+            /* Mobile responsiveness */
+            @media (max-width: 768px) {
+                body {
+                    padding: 12px;
+                }
+
+                .controls {
+                    grid-template-columns: 1fr;
+                    gap: 16px;
+                    padding: 16px;
+                }
+
+                .instructions {
+                    padding: 16px;
+                }
+
+                .canvas-container {
+                    max-width: 100%;
+                }
+
+                h1 {
+                    font-size: 1.8rem;
+                }
+            }
+
+            /* Accessibility */
+            @media (prefers-reduced-motion: reduce) {
+                .loading-spinner {
+                    animation: none;
+                }
+
+                input[type="range"]::-webkit-slider-thumb {
+                    transition: none;
+                }
+            }
+
+            /* High contrast mode */
+            @media (prefers-contrast: high) {
+                :root {
+                    --bg-primary: #000000;
+                    --bg-secondary: #333333;
+                    --text-primary: #ffffff;
+                    --accent: #00ff00;
+                }
             }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Bresenham Lighting Engine</h1>
+            <h1>🚀 Bresenham Lighting Engine</h1>
 
-            <div class="loading" id="loading">Loading WASM module...</div>
+            <div class="header-info">
+                <p>
+                    Interactive WebAssembly demo of CPU-based 2D lighting using
+                    Bresenham's line algorithm
+                </p>
+                <p>
+                    <a
+                        href="https://github.com/your-username/bresenham-lighting-engine"
+                        target="_blank"
+                        rel="noopener"
+                        >View on GitHub</a
+                    >
+                </p>
+            </div>
+
+            <div class="loading" id="loading">
+                <div class="loading-spinner"></div>
+                <div>Loading WebAssembly module...</div>
+                <div style="font-size: 0.8rem; margin-top: 8px; opacity: 0.7">
+                    This may take a moment on the first load
+                </div>
+            </div>
 
             <div class="error" id="error">
                 <strong>Error:</strong> <span id="error-message"></span>
+                <details style="margin-top: 12px">
+                    <summary>Troubleshooting</summary>
+                    <ul style="margin-top: 8px">
+                        <li>
+                            Make sure you're using a modern browser that
+                            supports WebAssembly
+                        </li>
+                        <li>Try refreshing the page</li>
+                        <li>
+                            Check your browser's console for detailed error
+                            messages
+                        </li>
+                        <li>
+                            Ensure you're accessing the page over HTTPS or
+                            localhost
+                        </li>
+                    </ul>
+                </details>
+            </div>
+
+            <div class="warning" id="warning" style="display: none">
+                <strong>Warning:</strong> <span id="warning-message"></span>
             </div>
 
             <form id="controls" class="controls" style="display: none">
                 <div class="control-group">
-                    <label for="x"
-                        >Light X Position: <span id="x-value">80</span></label
-                    >
+                    <label for="x">
+                        Light X Position
+                        <span class="control-value" id="x-value">80</span>
+                    </label>
                     <input
                         type="range"
                         value="80"
@@ -172,12 +436,14 @@
                         max="180"
                         name="x"
                         id="x"
+                        aria-label="Light X Position"
                     />
                 </div>
                 <div class="control-group">
-                    <label for="y"
-                        >Light Y Position: <span id="y-value">80</span></label
-                    >
+                    <label for="y">
+                        Light Y Position
+                        <span class="control-value" id="y-value">80</span>
+                    </label>
                     <input
                         type="range"
                         value="80"
@@ -185,12 +451,14 @@
                         max="180"
                         name="y"
                         id="y"
+                        aria-label="Light Y Position"
                     />
                 </div>
                 <div class="control-group">
-                    <label for="radius"
-                        >Light Radius: <span id="radius-value">40</span></label
-                    >
+                    <label for="radius">
+                        Light Radius
+                        <span class="control-value" id="radius-value">40</span>
+                    </label>
                     <input
                         type="range"
                         value="40"
@@ -198,6 +466,7 @@
                         max="60"
                         name="radius"
                         id="radius"
+                        aria-label="Light Radius"
                     />
                 </div>
             </form>
@@ -207,44 +476,118 @@
                 id="canvas-container"
                 style="display: none"
             >
-                <canvas id="game" width="180" height="180"></canvas>
+                <canvas
+                    id="game"
+                    width="180"
+                    height="180"
+                    aria-label="Lighting visualization"
+                ></canvas>
                 <canvas
                     id="walls"
                     width="180"
                     height="180"
                     oncontextmenu="return false;"
+                    aria-label="Wall drawing canvas"
                 ></canvas>
             </div>
 
             <div class="instructions" id="instructions" style="display: none">
-                <h3>Instructions</h3>
+                <h3>🎮 How to Use</h3>
                 <ul>
                     <li>
                         <strong>Left click + drag</strong> on the canvas to draw
-                        walls (obstacles)
+                        walls (obstacles that block light)
                     </li>
                     <li><strong>Right click + drag</strong> to erase walls</li>
                     <li>
                         <strong>Middle click</strong> to move the light to that
-                        position
+                        position instantly
                     </li>
-                    <li>Use the sliders above to adjust light properties</li>
+                    <li>
+                        Use the <strong>sliders above</strong> to adjust light
+                        properties in real-time
+                    </li>
+                    <li><strong>Ctrl+C</strong> to clear all walls</li>
                 </ul>
-                <p>
-                    Watch how the CPU-based ray casting creates realistic
-                    lighting and shadows!
-                </p>
+
+                <div class="tip">
+                    <strong>💡 Pro Tip:</strong> Try creating complex shapes and
+                    watch how the CPU-based ray casting creates realistic
+                    lighting and shadows without any GPU acceleration!
+                </div>
             </div>
 
             <div class="performance" id="performance" style="display: none">
-                <div>Performance Metrics:</div>
-                <div id="perf-init">Initialization: -</div>
-                <div id="perf-update">Light Update: -</div>
-                <div id="perf-canvas">Canvas Render: -</div>
-                <div id="perf-fps">FPS: -</div>
+                <h4>⚡ Performance Metrics</h4>
+                <div class="perf-metric">
+                    <span>Initialization:</span>
+                    <span class="perf-value" id="perf-init">-</span>
+                </div>
+                <div class="perf-metric">
+                    <span>Light Update:</span>
+                    <span class="perf-value" id="perf-update">-</span>
+                </div>
+                <div class="perf-metric">
+                    <span>Canvas Render:</span>
+                    <span class="perf-value" id="perf-canvas">-</span>
+                </div>
+                <div class="perf-metric">
+                    <span>FPS:</span>
+                    <span class="perf-value" id="perf-fps">-</span>
+                </div>
+            </div>
+
+            <div class="footer">
+                <p>
+                    Built with <strong>Rust 🦀</strong> +
+                    <strong>WebAssembly 🕸️</strong> +
+                    <strong>Modern Web APIs</strong>
+                </p>
+                <p>
+                    <a
+                        href="https://github.com/your-username/bresenham-lighting-engine"
+                        target="_blank"
+                        rel="noopener"
+                        >Source Code</a
+                    >
+                    |
+                    <a
+                        href="https://github.com/your-username/bresenham-lighting-engine/issues"
+                        target="_blank"
+                        rel="noopener"
+                        >Report Issues</a
+                    >
+                    |
+                    <a
+                        href="https://webassembly.org/"
+                        target="_blank"
+                        rel="noopener"
+                        >Learn WebAssembly</a
+                    >
+                </p>
+                <p style="font-size: 0.8rem; opacity: 0.7">
+                    <span id="build-info">Loading build info...</span>
+                </p>
             </div>
         </div>
 
         <script type="module" src="./script.mjs"></script>
+
+        <script>
+            // Load build information if available
+            fetch("./build-info.json")
+                .then((response) => response.json())
+                .then((data) => {
+                    const buildInfo = document.getElementById("build-info");
+                    const buildDate = new Date(
+                        data.build_time,
+                    ).toLocaleString();
+                    buildInfo.textContent = `Built on ${buildDate} (${data.commit_sha.slice(0, 7)})`;
+                })
+                .catch(() => {
+                    document.getElementById("build-info").textContent =
+                        "Development build";
+                });
+        </script>
     </body>
 </html>
