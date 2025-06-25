@@ -71,7 +71,7 @@ jobs:
           echo "🔨 Building WASM module..."
           wasm-pack build \
             --target web \
-            --out-dir pkg \
+            --out-dir examples/web-demo/pkg \
             --release \
             ../../
 
