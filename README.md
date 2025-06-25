@@ -32,17 +32,7 @@ Build the WASM module:
 wasm-pack build --target web
 ```
 
-## The Vibe
-
-This project is basically asking: "What if we did 2D lighting but made it work everywhere without needing a GPU?" The answer involves a lot of trigonometry, some clever ray casting, and the realization that sometimes the old ways hit different.
-
-Perfect for:
-- Indie games that need to run on a potato 🥔
-- Retro-style projects with modern performance
-- When you want lighting but your target platform thinks shaders are spicy food
-- Flexing that you can do graphics programming without graphics hardware
-
-## Roadmap (aka "Things We'll Probably Do")
+## Roadmap (aka "Things I'll Probably Never Do")
 
 - [x] Basic WASM implementation that doesn't crash
 - [x] Ray casting with proper shadow calculation
@@ -51,26 +41,3 @@ Perfect for:
 - [ ] Performance optimizations (SIMD goes brrr)
 - [ ] Better color blending modes
 - [ ] Multi-light support that doesn't melt your CPU
-
-## Technical Deep Dive
-
-The engine uses a grid-based approach where:
-1. Light sources cast rays in 360° using integer arithmetic
-2. Each ray checks for obstacles using line-walking algorithms
-3. Shadow boundaries are calculated using geometric projections
-4. Light falloff follows distance-based attenuation
-5. Final colors are rendered using HSV→RGB conversion
-
-It's like raytracing but your CPU is doing all the heavy lifting, and honestly? It's kinda beautiful.
-
-## Contributing
-
-Found a bug? Performance issue? Want to add more mathematical wizardry? PRs welcome! Just keep it clean and document your dark magic.
-
-## License
-
-ISC - Do whatever you want, just don't sue us if your computer catches fire from all the trigonometry.
-
----
-
-*Built with Rust and questionable life choices. Powered by the ancient art of drawing lines on computers.*
