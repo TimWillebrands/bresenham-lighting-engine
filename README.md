@@ -6,7 +6,7 @@
 
 This is a lighting engine that said "nah fam" to GPU shaders and decided to use **Bresenham line algorithms** for ray casting instead.
 
-The core idea is simple but kinda genius:
+The core idea is simple:
 - Cast rays using classic line-drawing algorithms
 - Calculate shadows by checking when rays get yeeted by obstacles
 - Apply light falloff based on distance
