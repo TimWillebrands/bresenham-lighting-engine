@@ -20,8 +20,9 @@
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::RwLock;
+use std::time::Instant;
 
-use crate::{arctan, ray};
+use crate::{arctan, log, ray};
 
 /// Maximum distance for light ray casting
 #[cfg(not(test))]
@@ -136,6 +137,8 @@ impl Light {
     /// # Returns
     /// Pointer to the beginning of the canvas pixel data for WASM interop
     fn update(&mut self) -> *const Color {
+        let start_time = Instant::now();
+        
         // Resize canvas if radius changed
         let new_canvas_size = (self.r * 2 + 1) as usize;
         let new_canvas_pixels = new_canvas_size * new_canvas_size;
@@ -200,6 +203,9 @@ impl Light {
             }
         }
 
+        let elapsed = start_time.elapsed();
+        crate::console_log!("Light update took: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+
         self.canvas.as_ptr()
     }
 
@@ -229,7 +235,9 @@ impl Light {
         // Ensure we don't write outside the canvas bounds
         if cell_idx < self.canvas.len() {
             // Use angle for hue, full saturation, and distance-based brightness
-            self.canvas[cell_idx] = hsv2rgb(angle as u8, 255, falloff as u8);
+            // Scale angle to full hue range (0-255) for proper color distribution
+            let scaled_hue = (angle * 255) / (ANGLES - 1);
+            self.canvas[cell_idx] = hsv2rgb(scaled_hue as u8, 255, falloff as u8);
         }
     }
 }

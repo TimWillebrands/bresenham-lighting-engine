@@ -790,3 +790,199 @@ mod tests {
         println!("\nUse these images to verify lighting behavior and debug issues!");
     }
 }
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn debug_shadow_issue() -> Result<(), Box<dyn std::error::Error>> {
+        ensure_output_dir()?;
+        init_test_environment();
+
+        // Create a very simple scenario to debug the shadow issue
+        println!("=== DEBUG: Testing shadow casting ===");
+        
+        // Add a single, obvious obstacle that should definitely block light
+        add_mock_obstacle(7, 5, 7, 15); // Vertical wall right next to light
+        
+        // Place light very close to obstacle for guaranteed interaction
+        let light_x = 5;
+        let light_y = 10;
+        let radius = 5;
+        
+        println!("Light position: ({}, {}), radius: {}", light_x, light_y, radius);
+        println!("Obstacle: vertical line from (7,5) to (7,15)");
+        
+        // Test the mock obstacle function directly
+        println!("Testing mock_is_blocked function:");
+        println!("  is_blocked(5, 10, 7, 10): {}", mock_is_blocked(5, 10, 7, 10)); // Should be true
+        println!("  is_blocked(5, 10, 6, 10): {}", mock_is_blocked(5, 10, 6, 10)); // Should be false
+        println!("  is_blocked(6, 10, 8, 10): {}", mock_is_blocked(6, 10, 8, 10)); // Should be true
+        
+        let light_ptr = lighting::update_or_add_light(1, radius, light_x, light_y);
+        
+        let canvas_size = radius * 2 + 1;
+        let mut img = canvas_to_image(light_ptr, canvas_size as usize);
+        
+        // Draw the obstacle on the image
+        draw_obstacles_on_image(&mut img);
+        
+        img.save("test_output/debug_shadow_test.png")?;
+        
+        println!("✓ Generated debug_shadow_test.png");
+        println!("Expected: Light should be blocked by vertical wall, creating shadow to the right");
+        
+        Ok(())
+    }
+
+    #[test]
+    fn debug_hsv_colors() -> Result<(), Box<dyn std::error::Error>> {
+        ensure_output_dir()?;
+        
+        // Create a test image showing HSV color mapping for different angles
+        let mut img = image::ImageBuffer::new(36, 10); // 36 angles in test mode
+        
+        println!("=== DEBUG: HSV Color Mapping ===");
+        for angle in 0..36 {
+            let test_color = hsv2rgb_debug(angle as u8, 255, 200); // Full saturation, good brightness
+            println!("Angle {}: HSV({}, 255, 200) -> RGB({}, {}, {})", 
+                     angle, angle * 10, test_color.0, test_color.1, test_color.2);
+            
+            // Draw a vertical stripe for each angle
+            for y in 0..10 {
+                img.put_pixel(angle as u32, y, image::Rgb([test_color.0, test_color.1, test_color.2]));
+            }
+        }
+        
+        img.save("test_output/debug_hsv_colors.png")?;
+        println!("✓ Generated debug_hsv_colors.png - shows color mapping for each angle");
+        
+        Ok(())
+    }
+
+    #[test]
+    fn debug_angle_scaling_issue() -> Result<(), Box<dyn std::error::Error>> {
+        ensure_output_dir()?;
+        
+        println!("=== DEBUG: Angle Scaling Issue ===");
+        println!("In test mode we have {} angles (0-{})", 36, 36-1);
+        println!("HSV function expects hue 0-255 for full color wheel");
+        println!("");
+        
+        // Show current (broken) behavior
+        let mut broken_img = image::ImageBuffer::new(36, 50);
+        println!("Current behavior (broken - all red/orange):");
+        for angle in 0..36 {
+            let broken_color = hsv2rgb_debug(angle as u8, 255, 200); // Direct angle as hue
+            println!("  Angle {}: hue={} -> RGB({}, {}, {})", angle, angle, broken_color.0, broken_color.1, broken_color.2);
+            
+            for y in 0..25 {
+                broken_img.put_pixel(angle as u32, y, image::Rgb([broken_color.0, broken_color.1, broken_color.2]));
+            }
+        }
+        
+        // Show fixed behavior
+        println!("");
+        println!("Fixed behavior (scaled hue to full range):");
+        for angle in 0..36 {
+            let scaled_hue = (angle * 255) / 35; // Scale to 0-255 range
+            let fixed_color = hsv2rgb_debug(scaled_hue as u8, 255, 200);
+            println!("  Angle {}: scaled_hue={} -> RGB({}, {}, {})", angle, scaled_hue, fixed_color.0, fixed_color.1, fixed_color.2);
+            
+            for y in 25..50 {
+                broken_img.put_pixel(angle as u32, y, image::Rgb([fixed_color.0, fixed_color.1, fixed_color.2]));
+            }
+        }
+        
+        broken_img.save("test_output/debug_angle_scaling.png")?;
+        println!("✓ Generated debug_angle_scaling.png");
+        println!("  Top half: Current broken behavior (all red/orange)");
+        println!("  Bottom half: Fixed behavior (full color spectrum)");
+        
+        Ok(())
+    }
+
+    /// Debug version of hsv2rgb to help identify color issues
+    fn hsv2rgb_debug(h: u8, s: u8, v: u8) -> (u8, u8, u8) {
+        // Handle grayscale case (no saturation)
+        if s == 0 {
+            return (v, v, v);
+        }
+
+        // Divide hue into 6 sectors (each 60° of the color wheel)
+        let sector = h / 43; // 255/6 ≈ 43
+        let remainder = (h - (sector * 43)) * 6;
+
+        // Calculate intermediate color values
+        let p = (v as u16 * (255 - s) as u16 / 255) as u8;
+        let q = (v as u16 * (255 - (s as u16 * remainder as u16 / 255)) / 255) as u8;
+        let t = (v as u16 * (255 - (s as u16 * (255 - remainder) as u16 / 255)) / 255) as u8;
+
+        // Return RGB values based on which sector of the color wheel we're in
+        match sector {
+            0 => (v, t, p), // Red to Yellow
+            1 => (q, v, p), // Yellow to Green
+            2 => (p, v, t), // Green to Cyan
+            3 => (p, q, v), // Cyan to Blue
+            4 => (t, p, v), // Blue to Magenta
+            _ => (v, p, q), // Magenta to Red
+        }
+    }
+
+    #[test]
+    fn verify_fix_working() -> Result<(), Box<dyn std::error::Error>> {
+        ensure_output_dir()?;
+        init_test_environment();
+        
+        println!("=== VERIFICATION: Testing both fixes ===");
+        
+        // Test 1: Verify color spectrum is working
+        println!("1. Testing color spectrum fix:");
+        let spectrum_light = lighting::update_or_add_light(1, 3, 3, 3);
+        let spectrum_img = canvas_to_image(spectrum_light, 7);
+        spectrum_img.save("test_output/verify_colors_fixed.png")?;
+        println!("   ✓ Generated verify_colors_fixed.png (should show full color spectrum)");
+        
+        // Test 2: Verify shadows are working
+        println!("2. Testing shadow casting:");
+        clear_mock_obstacles();
+        add_mock_obstacle(5, 3, 5, 8); // Vertical obstacle
+        
+        let shadow_light = lighting::update_or_add_light(2, 4, 3, 6);
+        let mut shadow_img = canvas_to_image(shadow_light, 9);
+        draw_obstacles_on_image(&mut shadow_img);
+        shadow_img.save("test_output/verify_shadows_fixed.png")?;
+        println!("   ✓ Generated verify_shadows_fixed.png (should show shadow to the right of white line)");
+        
+        // Test 3: Side-by-side comparison
+        println!("3. Creating before/after comparison:");
+        clear_mock_obstacles();
+        
+        // No obstacles version
+        let no_obstacles = lighting::update_or_add_light(3, 4, 10, 6);
+        
+        // With obstacles version  
+        add_mock_obstacle(12, 4, 12, 8);
+        let with_obstacles = lighting::update_or_add_light(4, 4, 10, 6);
+        
+        let comparison_lights = vec![
+            (no_obstacles, 9, 10, 6, "No Obstacles"),
+            (with_obstacles, 9, 20, 6, "With Obstacle"),
+        ];
+        
+        let mut comparison_img = create_composite_image(comparison_lights, 30, 12);
+        draw_obstacles_on_image(&mut comparison_img);
+        comparison_img.save("test_output/verify_before_after.png")?;
+        println!("   ✓ Generated verify_before_after.png (left: no obstacles, right: with shadow)");
+        
+        println!("");
+        println!("=== VERIFICATION COMPLETE ===");
+        println!("Check the verify_*.png files to confirm:");
+        println!("• verify_colors_fixed.png: Full color spectrum (not just red/orange)");
+        println!("• verify_shadows_fixed.png: Clear shadow casting");
+        println!("• verify_before_after.png: Side-by-side comparison");
+        
+        Ok(())
+    }
+}
