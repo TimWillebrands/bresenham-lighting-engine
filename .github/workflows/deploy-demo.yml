@@ -87,9 +87,15 @@ jobs:
           # Create deployment directory
           mkdir -p ../../dist
 
-          # Copy static files
+          # Copy HTML files
           cp index.html ../../dist/
-          cp script.mjs ../../dist/
+          cp test.html ../../dist/
+
+          # Copy CSS
+          cp styles.css ../../dist/
+
+          # Copy Preact source directory
+          cp -r src ../../dist/
 
           # Copy WASM package
           cp -r pkg ../../dist/
@@ -109,6 +115,12 @@ jobs:
 
           echo "✅ Deployment prepared:"
           ls -la ../../dist/
+          echo "📁 Source directory contents:"
+          ls -la ../../dist/src/
+          echo "🧩 Components:"
+          ls -la ../../dist/src/components/
+          echo "🪝 Hooks:"
+          ls -la ../../dist/src/hooks/
 
       - name: Upload deployment artifact
         uses: actions/upload-pages-artifact@v3
