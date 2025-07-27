@@ -68,35 +68,22 @@
 //! Typical performance: 1-5ms for a single light on modern hardware,
 //! scaling roughly linearly with the number of active lights.
 
-use once_cell::sync::Lazy;
-use std::sync::RwLock;
 use wasm_bindgen::prelude::*;
 
 // Re-export public modules for library use
 pub mod arctan;
 pub mod block_map;
+pub mod collision;
 pub mod constants;
 pub mod lighting;
 pub mod ray;
 
-/// Function pointer type for obstacle detection
+/// Legacy function pointer type for obstacle detection (deprecated)
+/// 
+/// This type is kept for backwards compatibility but is no longer used.
+/// The new collision detection system uses the `collision` module instead.
+#[deprecated(note = "Use collision::is_blocked instead")]
 pub type IsBlockedFn = fn(i16, i16, i16, i16) -> bool;
-
-/// Global function pointer for obstacle detection (can be overridden for testing)
-static IS_BLOCKED_FN: Lazy<RwLock<IsBlockedFn>> =
-    Lazy::new(|| RwLock::new(default_is_blocked_impl));
-
-/// Default implementation that calls the JavaScript function
-#[cfg(target_arch = "wasm32")]
-fn default_is_blocked_impl(x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
-    is_blocked_from_js(x0, y0, x1, y1)
-}
-
-/// Default implementation for non-WASM targets (always returns false)
-#[cfg(not(target_arch = "wasm32"))]
-fn default_is_blocked_impl(_x0: i16, _y0: i16, _x1: i16, _y1: i16) -> bool {
-    false
-}
 
 /// External JavaScript function for logging debug information.
 ///
@@ -106,63 +93,34 @@ fn default_is_blocked_impl(_x0: i16, _y0: i16, _x1: i16, _y1: i16) -> bool {
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log_from_js(s: &str);
-
-    /// External JavaScript function to check if a line segment is blocked.
-    ///
-    /// This function is implemented on the JavaScript side and provides
-    /// the obstacle detection logic for the lighting engine. It takes
-    /// two points representing a line segment and returns whether that
-    /// segment intersects with any obstacles in the world.
-    ///
-    /// # Arguments
-    /// * `x0`, `y0` - Starting point of the line segment
-    /// * `x1`, `y1` - Ending point of the line segment
-    ///
-    /// # Returns
-    /// `true` if the line segment is blocked by an obstacle, `false` otherwise
-    #[wasm_bindgen(js_name = IsBlocked)]
-    fn is_blocked_from_js(x0: i16, y0: i16, x1: i16, y1: i16) -> bool;
 }
 
-/// Export the IsBlocked function for JavaScript use.
+/// Legacy collision detection export (deprecated).
 ///
-/// This is a wrapper around the external IsBlocked function to make it
-/// available as a WASM export that JavaScript can import and use.
+/// This function is kept for backwards compatibility but now delegates
+/// to the new collision detection system.
+#[deprecated(note = "Use collision::is_blocked directly instead")]
 #[wasm_bindgen(js_name = doTheThing)]
 pub fn is_blocked(x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
-    if let Ok(func) = IS_BLOCKED_FN.read() {
-        (*func)(x0, y0, x1, y1)
-    } else {
-        false
-    }
+    collision::is_blocked(x0, y0, x1, y1)
 }
 
-/// Set a custom obstacle detection function (useful for testing)
+/// Legacy function to set a custom obstacle detection function (deprecated)
 ///
-/// # Arguments
-/// * `func` - Function that takes (x0, y0, x1, y1) and returns true if blocked
-///
-/// # Example
-/// ```rust,no_run
-/// use bresenham_lighting_engine::set_is_blocked_fn;
-///
-/// // Set a custom function for testing
-/// set_is_blocked_fn(|x0, y0, x1, y1| {
-///     // Custom logic here
-///     false
-/// });
-/// ```
-pub fn set_is_blocked_fn(func: IsBlockedFn) {
-    if let Ok(mut current_func) = IS_BLOCKED_FN.write() {
-        *current_func = func;
-    }
+/// This function is kept for backwards compatibility but does nothing.
+/// Use the new collision detection system instead.
+#[deprecated(note = "Use collision::set_collision_mode and collision::set_pixel instead")]
+pub fn set_is_blocked_fn(_func: IsBlockedFn) {
+    // No-op: the new collision system doesn't use function pointers
 }
 
-/// Reset the obstacle detection function to the default implementation
+/// Legacy function to reset the obstacle detection function (deprecated)
+///
+/// This function is kept for backwards compatibility but does nothing.
+/// Use the new collision detection system instead.
+#[deprecated(note = "Use collision::set_collision_mode instead")]
 pub fn reset_is_blocked_fn() {
-    if let Ok(mut current_func) = IS_BLOCKED_FN.write() {
-        *current_func = default_is_blocked_impl;
-    }
+    // No-op: the new collision system doesn't use function pointers
 }
 
 /// Export a logging function for JavaScript use.
@@ -192,8 +150,13 @@ pub fn log(message: &str) {
 /// this during a loading screen or startup phase.
 #[wasm_bindgen(start)]
 pub fn start() {
+    // Set up panic hook to get better error messages instead of "unreachable executed"
+    #[cfg(target_arch = "wasm32")]
+    console_error_panic_hook::set_once();
+    
     lighting::init();
     block_map::init();
+    collision::init();
 }
 
 /// Updates an existing light or creates a new one.
@@ -332,6 +295,127 @@ pub fn set_tile(x: u32, y: u32, tile: u8) {
     block_map::set_tile(x, y, tile);
 }
 
+/// Set the collision detection mode for the lighting engine.
+///
+/// Switches between different collision detection strategies to optimize
+/// performance for different use cases.
+///
+/// # Arguments
+/// * `mode` - Collision detection mode:
+///   - 0: Tile-based collision (structured worlds)
+///   - 1: Pixel-based collision (freeform drawing)
+///   - 2: Auto-select based on scenario
+///
+/// # Example Usage (JavaScript)
+/// ```javascript
+/// // Switch to pixel-perfect collision for drawing
+/// set_collision_mode(1);
+/// 
+/// // Switch back to tile-based for structured worlds
+/// set_collision_mode(0);
+/// ```
+#[wasm_bindgen]
+pub fn set_collision_mode(mode: u8) {
+    let collision_mode = match mode {
+        0 => collision::CollisionMode::Tile,
+        1 => collision::CollisionMode::Pixel,
+        2 => collision::CollisionMode::Auto,
+        _ => collision::CollisionMode::Tile, // Default fallback
+    };
+    collision::set_collision_mode(collision_mode);
+}
+
+/// Get the current collision detection mode.
+///
+/// # Returns
+/// Current collision mode as u8:
+/// - 0: Tile-based collision
+/// - 1: Pixel-based collision  
+/// - 2: Auto-select mode
+#[wasm_bindgen]
+pub fn get_collision_mode() -> u8 {
+    match collision::get_collision_mode() {
+        collision::CollisionMode::Tile => 0,
+        collision::CollisionMode::Pixel => 1,
+        collision::CollisionMode::Auto => 2,
+    }
+}
+
+/// Set multiple pixels as blocked or unblocked in a batch operation.
+///
+/// This function provides efficient batch updates for pixel-based collision
+/// detection, minimizing the overhead of individual pixel updates.
+///
+/// # Arguments
+/// * `pixels` - Byte array where each 3 consecutive bytes represent one pixel:
+///   - [x_low, x_high, y_low, y_high, blocked, ...] pattern
+///   - x/y coordinates are split into low/high bytes for u16 support
+///   - blocked: 0 = unblocked, non-zero = blocked
+///
+/// # Performance
+/// 
+/// Batch updates are significantly more efficient than individual pixel
+/// updates when modifying multiple pixels simultaneously.
+///
+/// # Example Usage (JavaScript)
+/// ```javascript
+/// // Set pixels (10,20), (11,21), (12,22) as blocked
+/// const pixels = new Uint8Array([
+///     10, 0, 20, 0, 1,  // (10,20) blocked
+///     11, 0, 21, 0, 1,  // (11,21) blocked  
+///     12, 0, 22, 0, 0,  // (12,22) unblocked
+/// ]);
+/// set_pixel_batch(pixels);
+/// ```
+#[wasm_bindgen]
+pub fn set_pixel_batch(pixels: &[u8]) {
+    // Each pixel requires 5 bytes: x_low, x_high, y_low, y_high, blocked
+    if pixels.len() % 5 != 0 {
+        console_log!("Warning: pixel batch data length {} is not divisible by 5", pixels.len());
+        return;
+    }
+
+    let pixel_updates: Vec<(u16, u16, bool)> = pixels
+        .chunks_exact(5)
+        .map(|chunk| {
+            let x = u16::from_le_bytes([chunk[0], chunk[1]]);
+            let y = u16::from_le_bytes([chunk[2], chunk[3]]);
+            let blocked = chunk[4] != 0;
+            (x, y, blocked)
+        })
+        .collect();
+    
+    if !collision::set_pixel_batch(pixel_updates) {
+        console_log!("Warning: set_pixel_batch called but current collision mode is not pixel-based");
+    }
+}
+
+/// Set a single pixel as blocked or unblocked.
+///
+/// For single pixel updates, this is more convenient than the batch API.
+/// However, for multiple pixels, prefer `set_pixel_batch` for better performance.
+///
+/// # Arguments
+/// * `x`, `y` - Pixel coordinates
+/// * `blocked` - Whether the pixel should block light rays (0 = unblocked, non-zero = blocked)
+#[wasm_bindgen]
+pub fn set_pixel(x: u16, y: u16, blocked: u8) {
+    let is_blocked = blocked != 0;
+    
+    if !collision::set_pixel(x, y, is_blocked) {
+        console_log!("Warning: set_pixel called but current collision mode is not pixel-based");
+    }
+}
+
+/// Clear all pixel collision data.
+///
+/// Resets all pixels to unblocked state. This is useful for clearing
+/// the collision map when starting fresh or switching scenes.
+#[wasm_bindgen]
+pub fn clear_pixel_collisions() {
+    collision::clear_collisions();
+}
+
 /// Utility macro for logging debug information to the console.
 ///
 /// This macro provides a convenient way to output debug information
@@ -362,6 +446,7 @@ macro_rules! console_log {
 
 // Re-export commonly used types for convenience
 pub use block_map::{init as init_block_map, CellDetails};
+pub use collision::{init as init_collision, CollisionMode};
 pub use constants::*;
 pub use lighting::{init as init_lighting, Color};
 

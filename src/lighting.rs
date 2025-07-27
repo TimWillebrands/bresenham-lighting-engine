@@ -20,21 +20,41 @@
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::RwLock;
-use std::time::Instant;
 
-use crate::{arctan, log, ray};
+use crate::{arctan, ray};
+
+#[cfg(target_arch = "wasm32")]
+use crate::log;
+
+/// Safe logging macro that won't crash if the JavaScript logging function isn't available yet
+#[cfg(target_arch = "wasm32")]
+macro_rules! safe_log {
+    ($($t:tt)*) => {
+        // Try to log, but don't panic if it fails
+        let _ = std::panic::catch_unwind(|| {
+            crate::console_log!($($t)*);
+        });
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! safe_log {
+    ($($t:tt)*) => {
+        // No-op for non-WASM targets
+    }
+}
 
 /// Maximum distance for light ray casting
-#[cfg(not(test))]
-const MAX_DIST: usize = 60;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 const MAX_DIST: usize = 10; // Smaller for tests to avoid stack overflow
+#[cfg(not(all(test, not(target_arch = "wasm32"))))]
+const MAX_DIST: usize = 60;
 
-/// Number of discrete angles for ray casting (360 degrees)
-#[cfg(not(test))]
-const ANGLES: usize = 360;
-#[cfg(test)]
+/// Number of discrete angles for ray casting (360 degrees)  
+#[cfg(all(test, not(target_arch = "wasm32")))]
 const ANGLES: usize = 36; // Smaller for tests to avoid stack overflow
+#[cfg(not(all(test, not(target_arch = "wasm32"))))]
+const ANGLES: usize = 360;
 
 /// 2D point represented as (x, y) coordinates using 16-bit signed integers
 type PtI = (i16, i16);
@@ -50,6 +70,10 @@ pub struct Color(pub u8, pub u8, pub u8, pub u8);
 /// This lazy static is computed once at startup and contains all the points
 /// that each ray will traverse for every possible angle and distance combination.
 static ALL_RAYS: Lazy<[[Vec<PtI>; ANGLES]; MAX_DIST]> = Lazy::new(|| {
+    // Log initialization if possible (won't crash if logging isn't set up yet)
+    #[cfg(target_arch = "wasm32")]
+    safe_log!("Initializing ALL_RAYS with MAX_DIST={}, ANGLES={}", MAX_DIST, ANGLES);
+    
     let mut rays: [[Vec<PtI>; ANGLES]; MAX_DIST] =
         std::array::from_fn(|_| std::array::from_fn(|_| Vec::new()));
 
@@ -69,13 +93,21 @@ static ALL_RAYS: Lazy<[[Vec<PtI>; ANGLES]; MAX_DIST]> = Lazy::new(|| {
             let dist = arctan::distance(pt);
 
             if dist <= radius as u16 {
-                let angle = arctan::rad_to_deg(arctan::atan2_int(y as i32, x as i32)) as usize;
-                if angle < ANGLES && (dist as usize) < MAX_DIST {
-                    rays[dist as usize][angle].push(pt);
+                let raw_angle = arctan::rad_to_deg(arctan::atan2_int(y as i32, x as i32));
+                let angle = (raw_angle as usize) % ANGLES; // Ensure angle is always < ANGLES
+                let distance = dist as usize;
+                
+                // Double-check bounds to prevent any index out of bounds errors
+                if angle < ANGLES && distance < MAX_DIST {
+                    rays[distance][angle].push(pt);
                 }
             }
         }
     }
+    
+    #[cfg(target_arch = "wasm32")]
+    safe_log!("ALL_RAYS initialization completed successfully");
+    
     rays
 });
 
@@ -114,6 +146,9 @@ impl Light {
     /// # Returns
     /// A new Light instance with cleared canvas and unblocked angles
     fn new(pos: PtI, r: i16) -> Self {
+        #[cfg(target_arch = "wasm32")]
+        safe_log!("Creating new light at {:?} with radius {}", pos, r);
+        
         let canvas_size = (r * 2 + 1) as usize;
         let canvas_pixels = canvas_size * canvas_size;
         Light {
@@ -137,7 +172,8 @@ impl Light {
     /// # Returns
     /// Pointer to the beginning of the canvas pixel data for WASM interop
     fn update(&mut self) -> *const Color {
-        let start_time = Instant::now();
+        #[cfg(target_arch = "wasm32")]
+        safe_log!("Starting light update for radius {} at {:?}", self.r, self.pos);
         
         // Resize canvas if radius changed
         let new_canvas_size = (self.r * 2 + 1) as usize;
@@ -154,6 +190,8 @@ impl Light {
         // Process each distance ring from the light source
         for d in 0..self.r as usize {
             if d >= MAX_DIST {
+                #[cfg(target_arch = "wasm32")]
+                safe_log!("Breaking at distance {} >= MAX_DIST {}", d, MAX_DIST);
                 break;
             }
 
@@ -165,46 +203,52 @@ impl Light {
                 }
 
                 // Process all cells at this specific distance and angle
-                for cell in &ALL_RAYS[d][angle] {
-                    // Special case: only process cardinal directions at distance 0
-                    if d == 0 && angle % 90 != 0 {
-                        continue;
-                    }
-
-                    // Transform cell coordinates to world coordinates
-                    let curr = (cell.0 + self.pos.0, cell.1 + self.pos.1);
-                    let prev = ray::step(curr, self.pos);
-
-                    // Check if this ray is blocked by an obstacle
-                    if crate::is_blocked(prev.0, prev.1, curr.0, curr.1) {
-                        // Block only this specific ray and maybe 1 adjacent ray
-                        self.blocked_angles[angle] = d as u8;
-
-                        // Optionally block 1 adjacent ray on each side for very close obstacles
-                        if d < 3 {
-                            let left_angle = if angle > 0 { angle - 1 } else { ANGLES - 1 };
-                            let right_angle = (angle + 1) % ANGLES;
-
-                            if self.blocked_angles[left_angle] > d as u8 {
-                                self.blocked_angles[left_angle] = d as u8;
-                            }
-                            if self.blocked_angles[right_angle] > d as u8 {
-                                self.blocked_angles[right_angle] = d as u8;
-                            }
+                if d < ALL_RAYS.len() && angle < ALL_RAYS[d].len() {
+                    for cell in &ALL_RAYS[d][angle] {
+                        // Special case: only process cardinal directions at distance 0
+                        if d == 0 && angle % 90 != 0 {
+                            continue;
                         }
 
-                        // Skip to next angle since this ray is blocked
-                        break;
-                    }
+                        // Transform cell coordinates to world coordinates
+                        let curr = (cell.0 + self.pos.0, cell.1 + self.pos.1);
+                        let prev = ray::step(curr, self.pos);
 
-                    // Ray is not blocked, so render the light at this position
-                    self.render_light_pixel(*cell, angle, d as u8);
+                        // Check if this ray is blocked by an obstacle
+                        if crate::collision::is_blocked(prev.0, prev.1, curr.0, curr.1) {
+                            // Block only this specific ray and maybe 1 adjacent ray
+                            self.blocked_angles[angle] = d as u8;
+
+                            // Optionally block 1 adjacent ray on each side for very close obstacles
+                            if d < 3 {
+                                let left_angle = if angle > 0 { angle - 1 } else { ANGLES - 1 };
+                                let right_angle = (angle + 1) % ANGLES;
+
+                                if self.blocked_angles[left_angle] > d as u8 {
+                                    self.blocked_angles[left_angle] = d as u8;
+                                }
+                                if self.blocked_angles[right_angle] > d as u8 {
+                                    self.blocked_angles[right_angle] = d as u8;
+                                }
+                            }
+
+                            // Skip to next angle since this ray is blocked
+                            break;
+                        }
+
+                        // Ray is not blocked, so render the light at this position
+                        self.render_light_pixel(*cell, angle, d as u8);
+                    }
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    safe_log!("ERROR: Array bounds issue - d={}, angle={}, ALL_RAYS.len()={}, ALL_RAYS[d].len()={}", 
+                        d, angle, ALL_RAYS.len(), if d < ALL_RAYS.len() { ALL_RAYS[d].len() } else { 0 });
                 }
             }
         }
 
-        let elapsed = start_time.elapsed();
-        crate::console_log!("Light update took: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+        #[cfg(target_arch = "wasm32")]
+        safe_log!("Light update completed successfully");
 
         self.canvas.as_ptr()
     }
@@ -298,11 +342,20 @@ fn hsv2rgb(h: u8, s: u8, v: u8) -> Color {
 /// This function is thread-safe thanks to the RwLock protecting the light map.
 /// Multiple lights can be updated concurrently from different threads.
 pub fn update_or_add_light(id: u8, r: i16, x: i16, y: i16) -> *const Color {
+    #[cfg(target_arch = "wasm32")]
+    safe_log!("update_or_add_light called: id={}, r={}, pos=({},{})", id, r, x, y);
+    
     // Clamp radius to maximum supported distance
     let clamped_r = r.min(MAX_DIST as i16).max(1);
+    
+    #[cfg(target_arch = "wasm32")]
+    safe_log!("Clamped radius: {} -> {}", r, clamped_r);
 
     // Attempt to get write access to the light map
     if let Ok(mut light_map) = LIGHT_MAP.write() {
+        #[cfg(target_arch = "wasm32")]
+        safe_log!("Acquired light map write lock");
+        
         // Check if we need to create a new light or update existing
         let needs_new_light = if let Some(existing_light) = light_map.get(&id) {
             existing_light.r != clamped_r
@@ -311,19 +364,44 @@ pub fn update_or_add_light(id: u8, r: i16, x: i16, y: i16) -> *const Color {
         };
 
         if needs_new_light {
+            #[cfg(target_arch = "wasm32")]
+            safe_log!("Creating new light");
+            
             // Create new light with correct radius
-            light_map.insert(id, Light::new((x, y), clamped_r));
+            let new_light = Light::new((x, y), clamped_r);
+            light_map.insert(id, new_light);
+            
+            #[cfg(target_arch = "wasm32")]
+            safe_log!("New light inserted successfully");
         }
 
         // Get the light and update its properties
         if let Some(light) = light_map.get_mut(&id) {
+            #[cfg(target_arch = "wasm32")]
+            safe_log!("Updating light properties");
+            
             light.pos = (x, y);
             light.r = clamped_r;
-            light.update()
+            
+            #[cfg(target_arch = "wasm32")]
+            safe_log!("About to call light.update()");
+            
+            let result = light.update();
+            
+            #[cfg(target_arch = "wasm32")]
+            safe_log!("Light.update() completed successfully");
+            
+            result
         } else {
+            #[cfg(target_arch = "wasm32")]
+            safe_log!("ERROR: Failed to get light after insertion");
+            
             std::ptr::null()
         }
     } else {
+        #[cfg(target_arch = "wasm32")]
+        safe_log!("ERROR: Failed to acquire light map write lock");
+        
         // Return null pointer if we can't acquire the lock
         std::ptr::null()
     }
@@ -340,8 +418,14 @@ pub fn update_or_add_light(id: u8, r: i16, x: i16, y: i16) -> *const Color {
 /// which can take a noticeable amount of time on slower devices. Consider calling
 /// this during a loading screen or startup phase.
 pub fn init() {
+    #[cfg(target_arch = "wasm32")]
+    safe_log!("Initializing lighting system...");
+    
     // Force initialization of the ray lookup table
     Lazy::force(&ALL_RAYS);
+
+    #[cfg(target_arch = "wasm32")]
+    safe_log!("Lighting system initialization completed");
 
     // The LIGHT_MAP is already initialized via Lazy::new(), so no additional setup needed
 }

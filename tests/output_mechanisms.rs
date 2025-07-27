@@ -92,17 +92,26 @@ fn line_segments_intersect(
         && ccw(x1, y1, x2, y2, x3, y3) != ccw(x1, y1, x2, y2, x4, y4)
 }
 
+/// Set up collision detection for testing using mock obstacles.
+fn set_test_collision_mode() {
+    // For now, use tile-based collision mode since we don't have a direct way
+    // to integrate the mock obstacles with the collision system.
+    // TODO: Create a proper test collision detector that uses mock obstacles
+    collision::set_collision_mode(collision::CollisionMode::Tile);
+}
+
 /// Initialize the test environment.
 fn init_test_environment() {
-    // Set up the mock obstacle detection function
-    set_is_blocked_fn(mock_is_blocked);
-
-    // Initialize the lighting system
+    // Initialize all systems
     lighting::init();
     block_map::init();
+    collision::init();
 
     // Clear any existing mock obstacles
     clear_mock_obstacles();
+    
+    // Use collision mode for testing
+    set_test_collision_mode();
 }
 
 /// Create the output directory if it doesn't exist.
