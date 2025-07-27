@@ -1,14 +1,14 @@
 import { html } from 'https://esm.sh/htm/preact';
 import { useEffect } from 'https://esm.sh/preact/hooks';
 
-export default function CanvasContainer({ 
-    canvasRef, 
-    wallsCanvasRef, 
-    onWallPixelUpdate, 
+export default function CanvasContainer({
+    canvasRef,
+    wallsCanvasRef,
+    onWallPixelUpdate,
     onLightMove,
     updateLighting
 }) {
-    
+
     useEffect(() => {
         const wallsCanvas = wallsCanvasRef.current;
         if (!wallsCanvas) return;
@@ -43,10 +43,10 @@ export default function CanvasContainer({
                         }
                     }
                 }
-                            }
 
                 // Update lighting after drawing walls
                 updateLighting();
+            }
 
             if (ev.buttons === 4) {
                 // Middle mouse button - move light
@@ -62,20 +62,14 @@ export default function CanvasContainer({
 
         // Enhanced pointer events for better touch support
         wallsCanvas.addEventListener("pointermove", drawWall);
-        wallsCanvas.addEventListener("pointerdown", drawWall);
         wallsCanvas.addEventListener("touchstart", (e) => e.preventDefault());
         wallsCanvas.addEventListener("touchmove", (e) => e.preventDefault());
-
-        // Prevent context menu on right click
-        wallsCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
         return () => {
             if (wallsCanvas) {
                 wallsCanvas.removeEventListener("pointermove", drawWall);
-                wallsCanvas.removeEventListener("pointerdown", drawWall);
                 wallsCanvas.removeEventListener("touchstart", (e) => e.preventDefault());
                 wallsCanvas.removeEventListener("touchmove", (e) => e.preventDefault());
-                wallsCanvas.removeEventListener("contextmenu", (e) => e.preventDefault());
             }
         };
     }, [wallsCanvasRef, onWallPixelUpdate, onLightMove]);

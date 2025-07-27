@@ -24,6 +24,8 @@ use crate::constants::{CELLS_PER_ROW, CELLS_TOTAL};
 use std::sync::RwLock;
 use once_cell::sync::Lazy;
 
+
+
 /// Collision detection strategy enumeration.
 ///
 /// Determines which collision detection method to use for ray casting.
@@ -177,6 +179,7 @@ impl CollisionDetector for PixelCollisionMap {
 
         let mut x = x0;
         let mut y = y0;
+        let mut step_count = 0;
 
         loop {
             // Check bounds and collision at current position
@@ -200,6 +203,13 @@ impl CollisionDetector for PixelCollisionMap {
             if e2 < dx {
                 err += dx;
                 y += sy;
+            }
+            
+            step_count += 1;
+            
+            // Safety check to prevent infinite loops
+            if step_count > 1000 {
+                break;
             }
         }
 

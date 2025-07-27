@@ -1,9 +1,15 @@
 [package]
 name = "bresenham-lighting-engine"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "A CPU-based 2D lighting engine using Bresenham's line algorithm"
+description = "A CPU-based 2D lighting engine using Bresenham's line algorithm with fast native collision detection"
 license = "ISC"
+authors = ["Tim <tim@example.com>"]
+keywords = ["lighting", "game-engine", "webassembly", "bresenham", "2d"]
+categories = ["game-engines", "graphics", "wasm"]
+
+[package.metadata.wasm-pack.profile.dev.wasm-bindgen]
+dwarf-debug-info = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]

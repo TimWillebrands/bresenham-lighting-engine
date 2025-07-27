@@ -8,6 +8,8 @@ export function useLighting(wasmModule) {
         radius: 40
     });
 
+
+
     const [perfMetrics, setPerfMetrics] = useState({
         init: 0,
         update: 0,
@@ -159,12 +161,12 @@ export function useLighting(wasmModule) {
         };
     }, [wasmModule]);
 
-    // Update lighting when config changes
+    // Update lighting when config changes (only for slider/user changes, not manual calls)
     useEffect(() => {
         if (wasmModule) {
             updateLighting();
         }
-    }, [wasmModule, lightConfig, updateLighting]);
+    }, [wasmModule, lightConfig]); // Removed updateLighting from deps to prevent cycles
 
     return {
         lightConfig,

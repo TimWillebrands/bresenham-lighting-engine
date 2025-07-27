@@ -95,25 +95,6 @@ extern "C" {
     fn log_from_js(s: &str);
 }
 
-/// Legacy collision detection export (deprecated).
-///
-/// This function is kept for backwards compatibility but now delegates
-/// to the new collision detection system.
-#[deprecated(note = "Use collision::is_blocked directly instead")]
-#[wasm_bindgen(js_name = doTheThing)]
-pub fn is_blocked(x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
-    collision::is_blocked(x0, y0, x1, y1)
-}
-
-/// Legacy function to set a custom obstacle detection function (deprecated)
-///
-/// This function is kept for backwards compatibility but does nothing.
-/// Use the new collision detection system instead.
-#[deprecated(note = "Use collision::set_collision_mode and collision::set_pixel instead")]
-pub fn set_is_blocked_fn(_func: IsBlockedFn) {
-    // No-op: the new collision system doesn't use function pointers
-}
-
 /// Legacy function to reset the obstacle detection function (deprecated)
 ///
 /// This function is kept for backwards compatibility but does nothing.
@@ -390,10 +371,7 @@ pub fn set_pixel_batch(pixels: &[u8]) {
     }
 }
 
-/// Set a single pixel as blocked or unblocked.
-///
-/// For single pixel updates, this is more convenient than the batch API.
-/// However, for multiple pixels, prefer `set_pixel_batch` for better performance.
+/// Set a single pixel in the collision map if in pixel mode.
 ///
 /// # Arguments
 /// * `x`, `y` - Pixel coordinates
