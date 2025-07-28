@@ -1,6 +1,6 @@
 [package]
 name = "bresenham-lighting-engine"
-version = "0.2.1"
+version = "0.2.3"
 edition = "2021"
 description = "A CPU-based 2D lighting engine using Bresenham's line algorithm with fast native collision detection"
 license = "ISC"

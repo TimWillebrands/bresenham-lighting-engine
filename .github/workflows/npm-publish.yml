@@ -178,16 +178,4 @@ jobs:
               required_contexts: []
             });
 
-      - name: Comment on release (if triggered by release)
-        if: github.event_name == 'release'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const packageJson = require('./pkg/package.json');
-            
-            github.rest.issues.createComment({
-              issue_number: context.payload.release.id,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `🚀 Package successfully published to NPM!\n\n📦 **${packageJson.name}@${packageJson.version}**\n\nInstall with:\n\`\`\`bash\nnpm install ${packageJson.name}\n\`\`\`\n\n[View on NPM](https://www.npmjs.com/package/${packageJson.name})`
-            }); 
+ 
