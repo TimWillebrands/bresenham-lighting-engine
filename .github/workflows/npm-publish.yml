@@ -51,9 +51,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install wasm-pack
+      - name: Install wasm-pack and cargo-edit
         run: |
           curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          cargo install cargo-edit
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Setup Node.js
@@ -87,11 +88,8 @@ jobs:
           if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" != "$CURRENT_VERSION" ]; then
             echo "Updating Cargo.toml with version: $NEW_VERSION"
             
-            # Use awk for safer text replacement
-            awk -v new_version="$NEW_VERSION" '
-              /^version = / { print "version = \"" new_version "\""; next }
-              { print }
-            ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+            # Use cargo-edit for proper version management
+            cargo set-version "$NEW_VERSION"
             
             echo "Updated to version: $NEW_VERSION"
           fi
