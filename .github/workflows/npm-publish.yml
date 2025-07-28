@@ -70,7 +70,7 @@ jobs:
           if [ -n "$INPUT_VERSION" ]; then
             # Update version in Cargo.toml if specified
             echo "Updating version to: $INPUT_VERSION"
-            sed -i "s/^version = \".*\"/version = \"$INPUT_VERSION\"/" Cargo.toml
+            sed -i "s|^version = \".*\"|version = \"$INPUT_VERSION\"|" Cargo.toml
             echo "Updated Cargo.toml version to $INPUT_VERSION"
           elif [ "$INPUT_TAG" != "latest" ] && [ -n "$INPUT_TAG" ]; then
             # For non-latest tags (testing), auto-increment with pre-release identifier
@@ -78,7 +78,9 @@ jobs:
             TIMESTAMP=$(date +%Y%m%d%H%M%S)
             NEW_VERSION="${CURRENT_VERSION}-${INPUT_TAG}.${TIMESTAMP}"
             echo "Auto-generating test version: $NEW_VERSION"
-            sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+            
+            # Use | as delimiter to avoid issues with special characters
+            sed -i "s|^version = \".*\"|version = \"$NEW_VERSION\"|" Cargo.toml
             echo "Updated to test version: $NEW_VERSION"
           else
             CURRENT_VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
