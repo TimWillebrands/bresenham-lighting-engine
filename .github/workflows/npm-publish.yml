@@ -10,10 +10,15 @@ on:
         required: false
         type: string
       tag:
-        description: 'NPM tag to publish under (latest, beta, alpha, etc.)'
+        description: 'NPM tag (latest=production, test/beta/alpha=auto-versioned for testing)'
         required: false
-        default: 'latest'
-        type: string
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - beta  
+          - alpha
+          - latest
 
 # Allow the workflow to create deployments and comment on releases
 permissions:
@@ -57,12 +62,23 @@ jobs:
           node-version: '18'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Update version if specified
-        if: ${{ github.event.inputs.version != '' }}
+      - name: Handle version management
         run: |
-          # Update version in Cargo.toml
-          sed -i 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' Cargo.toml
-          echo "Updated Cargo.toml version to ${{ github.event.inputs.version }}"
+          if [ "${{ github.event.inputs.version }}" != "" ]; then
+            # Update version in Cargo.toml if specified
+            sed -i 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' Cargo.toml
+            echo "Updated Cargo.toml version to ${{ github.event.inputs.version }}"
+          elif [ "${{ github.event.inputs.tag }}" != "latest" ]; then
+            # For non-latest tags (testing), auto-increment with pre-release identifier
+            CURRENT_VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+            TIMESTAMP=$(date +%Y%m%d%H%M%S)
+            NEW_VERSION="${CURRENT_VERSION}-${{ github.event.inputs.tag }}.${TIMESTAMP}"
+            sed -i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+            echo "Auto-generated test version: ${NEW_VERSION}"
+          else
+            CURRENT_VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+            echo "Using version from Cargo.toml: ${CURRENT_VERSION}"
+          fi
 
       - name: Build WebAssembly package
         run: |
@@ -95,9 +111,29 @@ jobs:
           echo "📝 Updated package.json:"
           cat package.json
 
-      - name: Dry run npm publish
+      - name: Check if version exists and dry run
         working-directory: pkg
         run: |
+          PACKAGE_NAME=$(npm pkg get name | tr -d '"')
+          PACKAGE_VERSION=$(npm pkg get version | tr -d '"')
+          
+          echo "🔍 Checking if ${PACKAGE_NAME}@${PACKAGE_VERSION} already exists..."
+          
+          # Check if version exists on npm
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version 2>/dev/null; then
+            echo "⚠️  Version ${PACKAGE_VERSION} already exists on npm"
+            
+            if [ "${{ github.event.inputs.tag || 'latest' }}" = "latest" ]; then
+              echo "❌ Cannot republish existing version to 'latest' tag"
+              echo "💡 Suggestion: Increment the version in Cargo.toml or use a different tag for testing"
+              exit 1
+            else
+              echo "⚠️  Version exists but using tag '${{ github.event.inputs.tag || 'latest' }}' - this might still fail"
+            fi
+          else
+            echo "✅ Version ${PACKAGE_VERSION} is available for publishing"
+          fi
+          
           echo "🧪 Running dry run publish..."
           npm publish --dry-run --tag ${{ github.event.inputs.tag || 'latest' }}
 
