@@ -1,6 +1,7 @@
 # bresenham-lighting-engine
 
 [![Live Demo](https://img.shields.io/badge/demo-live-brightgreen)](https://TimWillebrands.github.io/bresenham-lighting-engine/)
+[![NPM Version](https://img.shields.io/npm/v/bresenham-lighting-engine)](https://www.npmjs.com/package/bresenham-lighting-engine)
 
 ## What is this madness?
 
@@ -19,6 +20,26 @@ The core idea is simple:
 📦 **Minimalistic AF** - No bloated dependencies, just pure algorithmic goodness
 🎯 **Portable** - Will perhaps work in native game engines
 ⚡ **Performant** - Surprisingly fast for CPU-based lighting
+
+## Installation
+
+### Option 1: NPM Package (Recommended)
+
+```bash
+npm install bresenham-lighting-engine
+```
+
+```javascript
+import init, { LightingEngine } from 'bresenham-lighting-engine';
+
+async function main() {
+  await init();
+  const engine = new LightingEngine(800, 600);
+  // Start casting rays like it's 1962!
+}
+```
+
+### Option 2: Build from Source
 
 ## Quick Start (for the impatient)
 

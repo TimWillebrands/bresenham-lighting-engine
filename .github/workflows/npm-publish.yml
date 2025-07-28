@@ -1,0 +1,139 @@
+name: Publish to NPM
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (leave empty to use Cargo.toml version)'
+        required: false
+        type: string
+      tag:
+        description: 'NPM tag to publish under (latest, beta, alpha, etc.)'
+        required: false
+        default: 'latest'
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install wasm-pack
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update version if specified
+        if: ${{ github.event.inputs.version != '' }}
+        run: |
+          # Update version in Cargo.toml
+          sed -i 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' Cargo.toml
+          echo "Updated Cargo.toml version to ${{ github.event.inputs.version }}"
+
+      - name: Build WebAssembly package
+        run: |
+          echo "🔨 Building WebAssembly package for npm..."
+          wasm-pack build \
+            --target bundler \
+            --out-dir pkg \
+            --release \
+            --scope bresenham
+          
+          echo "📊 Build verification:"
+          ls -la pkg/
+          echo "WASM size: $(du -h pkg/bresenham_lighting_engine_bg.wasm | cut -f1)"
+          
+          # Show the generated package.json
+          echo "📦 Generated package.json:"
+          cat pkg/package.json
+
+      - name: Update package metadata
+        working-directory: pkg
+        run: |
+          # Add repository and homepage information
+          npm pkg set repository.type="git"
+          npm pkg set repository.url="git+https://github.com/${{ github.repository }}.git"
+          npm pkg set homepage="https://github.com/${{ github.repository }}#readme"
+          npm pkg set bugs.url="https://github.com/${{ github.repository }}/issues"
+          
+          # Add keywords if not present
+          npm pkg set keywords='["lighting", "game-engine", "webassembly", "bresenham", "2d", "wasm", "rust"]'
+          
+          echo "📝 Updated package.json:"
+          cat package.json
+
+      - name: Dry run npm publish
+        working-directory: pkg
+        run: |
+          echo "🧪 Running dry run publish..."
+          npm publish --dry-run --tag ${{ github.event.inputs.tag || 'latest' }}
+
+      - name: Publish to NPM
+        working-directory: pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "🚀 Publishing to NPM..."
+          npm publish --tag ${{ github.event.inputs.tag || 'latest' }} --access public
+          
+          echo "✅ Package published successfully!"
+          echo "📦 Package: $(npm pkg get name | tr -d '"')"
+          echo "🏷️  Version: $(npm pkg get version | tr -d '"')"
+          echo "🔖 Tag: ${{ github.event.inputs.tag || 'latest' }}"
+
+      - name: Create GitHub deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const packageJson = require('./pkg/package.json');
+            
+            github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: 'npm',
+              description: `Published ${packageJson.name}@${packageJson.version} to NPM`,
+              auto_merge: false,
+              required_contexts: []
+            });
+
+      - name: Comment on release (if triggered by release)
+        if: github.event_name == 'release'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const packageJson = require('./pkg/package.json');
+            
+            github.rest.issues.createComment({
+              issue_number: context.payload.release.id,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚀 Package successfully published to NPM!\n\n📦 **${packageJson.name}@${packageJson.version}**\n\nInstall with:\n\`\`\`bash\nnpm install ${packageJson.name}\n\`\`\`\n\n[View on NPM](https://www.npmjs.com/package/${packageJson.name})`
+            }); 
