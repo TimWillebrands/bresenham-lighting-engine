@@ -63,8 +63,7 @@ jobs:
           wasm-pack build \
             --target bundler \
             --out-dir pkg \
-            --release \
-            --scope bresenham
+            --release
           
           echo "📊 Build verification:"
           ls -la pkg/
