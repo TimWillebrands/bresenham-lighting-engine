@@ -68,7 +68,8 @@ jobs:
           INPUT_VERSION="${{ github.event.inputs.version }}"
           INPUT_TAG="${{ github.event.inputs.tag }}"
           
-          CURRENT_VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          # Use cargo's built-in metadata extraction (best practice)
+          CURRENT_VERSION=$(cargo pkgid | cut -d# -f2 | cut -d: -f2)
           
           if [ -n "$INPUT_VERSION" ]; then
             echo "Updating version to: $INPUT_VERSION"
