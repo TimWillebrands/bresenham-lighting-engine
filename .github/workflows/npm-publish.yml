@@ -15,6 +15,13 @@ on:
         default: 'latest'
         type: string
 
+# Allow the workflow to create deployments and comment on releases
+permissions:
+  contents: read
+  deployments: write
+  issues: write
+  pull-requests: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -113,7 +120,7 @@ jobs:
           script: |
             const packageJson = require('./pkg/package.json');
             
-            github.rest.repos.createDeployment({
+            await github.rest.repos.createDeployment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               ref: context.sha,
