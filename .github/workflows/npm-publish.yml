@@ -68,16 +68,12 @@ jobs:
           INPUT_VERSION="${{ github.event.inputs.version }}"
           INPUT_TAG="${{ github.event.inputs.tag }}"
           
-          # Extract current version and clean it up
-          CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d '\n\r')
-          echo "Current version in Cargo.toml: $CURRENT_VERSION"
+          CURRENT_VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
           
           if [ -n "$INPUT_VERSION" ]; then
-            # Update version in Cargo.toml if specified
-            echo "Using specified version: $INPUT_VERSION"
+            echo "Updating version to: $INPUT_VERSION"
             NEW_VERSION="$INPUT_VERSION"
           elif [ "$INPUT_TAG" != "latest" ] && [ -n "$INPUT_TAG" ]; then
-            # For non-latest tags (testing), auto-increment with pre-release identifier
             TIMESTAMP=$(date +%Y%m%d%H%M%S)
             NEW_VERSION="${CURRENT_VERSION}-${INPUT_TAG}.${TIMESTAMP}"
             echo "Auto-generating test version: $NEW_VERSION"
@@ -86,22 +82,11 @@ jobs:
             NEW_VERSION="$CURRENT_VERSION"
           fi
           
-          # Clean the new version string
-          NEW_VERSION=$(echo "$NEW_VERSION" | tr -d '\n\r')
-          
-          # Only update Cargo.toml if we have a new version
           if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" != "$CURRENT_VERSION" ]; then
             echo "Updating Cargo.toml with version: $NEW_VERSION"
-            
-            # Use cargo-edit for proper version management
             cargo set-version "$NEW_VERSION"
-            
             echo "Updated to version: $NEW_VERSION"
           fi
-          
-          # Show the final version
-          echo "Final version in Cargo.toml:"
-          grep '^version = ' Cargo.toml
 
       - name: Build WebAssembly package
         run: |
