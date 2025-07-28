@@ -4,7 +4,7 @@
 
 ## What is this madness?
 
-This is a lighting engine that said "nah fam" to GPU shaders and decided to use **Bresenham line algorithms** for ray casting instead.
+This is an experimental lighting engine that said "nah fam" to GPU shaders and decided to use **Bresenham line algorithms** for ray casting instead.
 
 The core idea is simple:
 - Cast rays using classic line-drawing algorithms
