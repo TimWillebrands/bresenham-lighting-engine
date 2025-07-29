@@ -23,7 +23,14 @@ use std::sync::RwLock;
 
 use crate::{arctan, ray};
 
-
+/// Color mode configuration for light sources
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColorMode {
+    /// Solid color using specified hue (0-255)
+    Solid(u8),
+    /// Custom HSV color with specified hue and saturation
+    Custom { hue: u8, saturation: u8 },
+}
 
 /// Maximum distance for light ray casting
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -101,6 +108,8 @@ struct Light {
     pos: PtI,
     /// Radius/range of the light (maximum distance it can illuminate)
     r: i16,
+    /// Color mode configuration for this light (None = default rainbow effect)
+    color_mode: Option<ColorMode>,
     /// Rendered pixel data for this light (RGBA format)
     canvas: Vec<Color>,
     /// Canvas dimensions (width and height)
@@ -116,15 +125,17 @@ impl Light {
     /// # Arguments
     /// * `pos` - World coordinates (x, y) where the light is positioned
     /// * `r` - Maximum distance the light can illuminate
+    /// * `color_mode` - Color configuration for this light (None for default rainbow)
     ///
     /// # Returns
     /// A new Light instance with cleared canvas and unblocked angles
-    fn new(pos: PtI, r: i16) -> Self {
+    fn new(pos: PtI, r: i16, color_mode: Option<ColorMode>) -> Self {
         let canvas_size = (r * 2 + 1) as usize;
         let canvas_pixels = canvas_size * canvas_size;
         Light {
             pos,
             r,
+            color_mode,
             canvas: vec![Color::default(); canvas_pixels],
             canvas_size,
             blocked_angles: [255; ANGLES], // 255 = not blocked
@@ -219,7 +230,7 @@ impl Light {
     ///
     /// # Arguments
     /// * `cell` - Local coordinates relative to the light center
-    /// * `angle` - The angle of the ray (used for hue calculation)
+    /// * `angle` - The angle of the ray (used for hue calculation when in rainbow mode)
     /// * `distance` - Distance from light source (used for brightness falloff)
     fn render_light_pixel(&mut self, cell: PtI, angle: usize, distance: u8) {
         // Transform local coordinates to canvas coordinates
@@ -240,10 +251,23 @@ impl Light {
 
         // Ensure we don't write outside the canvas bounds
         if cell_idx < self.canvas.len() {
-            // Use angle for hue, full saturation, and distance-based brightness
-            // Scale angle to full hue range (0-255) for proper color distribution
-            let scaled_hue = (angle * 255) / (ANGLES - 1);
-            self.canvas[cell_idx] = hsv2rgb(scaled_hue as u8, 255, falloff as u8);
+            let color = match &self.color_mode {
+                // Default rainbow effect - hue varies by angle, full saturation
+                None => {
+                    let scaled_hue = (angle * 255) / (ANGLES - 1);
+                    hsv2rgb(scaled_hue as u8, 255, falloff as u8)
+                }
+                // Solid color - fixed hue, full saturation
+                Some(ColorMode::Solid(hue)) => {
+                    hsv2rgb(*hue, 255, falloff as u8)
+                }
+                // Custom color - specified hue and saturation
+                Some(ColorMode::Custom { hue, saturation }) => {
+                    hsv2rgb(*hue, *saturation, falloff as u8)
+                }
+            };
+            
+            self.canvas[cell_idx] = color;
         }
     }
 }
@@ -286,10 +310,77 @@ fn hsv2rgb(h: u8, s: u8, v: u8) -> Color {
     }
 }
 
+/// Updates an existing light or creates a new one with a solid color
+///
+/// # Arguments
+/// * `id` - Unique identifier for the light (0-255)
+/// * `r` - Light radius/range (clamped to MAX_DIST)
+/// * `x` - World X coordinate
+/// * `y` - World Y coordinate
+/// * `hue` - Color hue (0-255, representing 0-360°)
+///
+/// # Returns
+/// Pointer to the light's canvas data for rendering, or null pointer on error
+pub fn update_or_add_light_with_solid_color(id: u8, r: i16, x: i16, y: i16, hue: u8) -> *const Color {
+    update_light_with_color_mode(id, r, x, y, Some(ColorMode::Solid(hue)))
+}
+
+/// Updates an existing light or creates a new one with custom HSV color
+///
+/// # Arguments
+/// * `id` - Unique identifier for the light (0-255)
+/// * `r` - Light radius/range (clamped to MAX_DIST)
+/// * `x` - World X coordinate
+/// * `y` - World Y coordinate
+/// * `hue` - Color hue (0-255, representing 0-360°)
+/// * `saturation` - Color saturation (0-255, 0=grayscale, 255=full color)
+///
+/// # Returns
+/// Pointer to the light's canvas data for rendering, or null pointer on error
+pub fn update_or_add_light_with_custom_color(id: u8, r: i16, x: i16, y: i16, hue: u8, saturation: u8) -> *const Color {
+    update_light_with_color_mode(id, r, x, y, Some(ColorMode::Custom { hue, saturation }))
+}
+
+/// Internal helper function to update lights with any color mode
+fn update_light_with_color_mode(id: u8, r: i16, x: i16, y: i16, color_mode: Option<ColorMode>) -> *const Color {
+    // Clamp radius to maximum supported distance
+    let clamped_r = r.min(MAX_DIST as i16).max(1);
+
+    // Attempt to get write access to the light map
+    if let Ok(mut light_map) = LIGHT_MAP.write() {
+        // Check if we need to create a new light or update existing
+        let needs_new_light = if let Some(existing_light) = light_map.get(&id) {
+            existing_light.r != clamped_r || existing_light.color_mode != color_mode
+        } else {
+            true
+        };
+
+        if needs_new_light {
+            // Create new light with correct radius and color mode
+            let new_light = Light::new((x, y), clamped_r, color_mode.clone());
+            light_map.insert(id, new_light);
+        }
+
+        // Get the light and update its properties
+        if let Some(light) = light_map.get_mut(&id) {
+            light.pos = (x, y);
+            light.r = clamped_r;
+            light.color_mode = color_mode;
+            light.update()
+        } else {
+            std::ptr::null()
+        }
+    } else {
+        // Return null pointer if we can't acquire the lock
+        std::ptr::null()
+    }
+}
+
 /// Updates an existing light or creates a new one with the specified parameters
 ///
-/// This is the main entry point for the lighting system from WASM. It manages
-/// the light storage and triggers recalculation when light properties change.
+/// This function maintains backward compatibility by using the default rainbow color mode.
+/// For custom colors, use `update_or_add_light_with_solid_color` or 
+/// `update_or_add_light_with_custom_color`.
 ///
 /// # Arguments
 /// * `id` - Unique identifier for the light (0-255)
@@ -304,36 +395,7 @@ fn hsv2rgb(h: u8, s: u8, v: u8) -> Color {
 /// This function is thread-safe thanks to the RwLock protecting the light map.
 /// Multiple lights can be updated concurrently from different threads.
 pub fn update_or_add_light(id: u8, r: i16, x: i16, y: i16) -> *const Color {
-    // Clamp radius to maximum supported distance
-    let clamped_r = r.min(MAX_DIST as i16).max(1);
-
-    // Attempt to get write access to the light map
-    if let Ok(mut light_map) = LIGHT_MAP.write() {
-        // Check if we need to create a new light or update existing
-        let needs_new_light = if let Some(existing_light) = light_map.get(&id) {
-            existing_light.r != clamped_r
-        } else {
-            true
-        };
-
-        if needs_new_light {
-            // Create new light with correct radius
-            let new_light = Light::new((x, y), clamped_r);
-            light_map.insert(id, new_light);
-        }
-
-        // Get the light and update its properties
-        if let Some(light) = light_map.get_mut(&id) {
-            light.pos = (x, y);
-            light.r = clamped_r;
-            light.update()
-        } else {
-            std::ptr::null()
-        }
-    } else {
-        // Return null pointer if we can't acquire the lock
-        std::ptr::null()
-    }
+    update_light_with_color_mode(id, r, x, y, None)
 }
 
 /// Initializes the lighting system

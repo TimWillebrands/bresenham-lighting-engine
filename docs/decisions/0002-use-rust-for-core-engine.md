@@ -1,8 +1,6 @@
 # Use Rust for Core Engine Instead of C3
 
 - Status: accepted
-- Deciders: Development Team
-- Date: 2024-12-19
 
 Technical Story: The project needs a robust, modern, and maintainable language for its core logic to ensure long-term viability and developer productivity.
 

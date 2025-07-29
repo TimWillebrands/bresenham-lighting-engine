@@ -1,8 +1,6 @@
 # Use Bresenham Line Algorithms for CPU-Based Lighting Engine
 
 - Status: accepted
-- Deciders: Development Team
-- Date: 2024-12-19
 
 Technical Story: Need for a portable, GPU-independent lighting engine that can work across multiple platforms and devices.
 
