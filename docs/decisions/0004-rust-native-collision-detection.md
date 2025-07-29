@@ -1,8 +1,6 @@
 # Rust-Native Collision Detection for Ray Casting Performance
 
-- Status: proposed
-- Deciders: [Performance Analysis and Architecture Review]
-- Date: 2025-07-27
+- Status: accepted
 
 Technical Story: Performance bottleneck identified in ray casting where JavaScript-based collision detection causes ~250ms per light update due to expensive WASM bridge calls.
 

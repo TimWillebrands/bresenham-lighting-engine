@@ -1,8 +1,6 @@
 # Avoid Async Rust for Core Engine Simplicity
 
 - Status: accepted
-- Deciders: Development Team
-- Date: 2024-12-19
 
 Technical Story: As we adopt Rust, we need to decide on a concurrency model that fits the project's goals of simplicity and performance for a CPU-bound workload.
 
