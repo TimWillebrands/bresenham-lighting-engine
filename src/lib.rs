@@ -18,6 +18,7 @@
 //! - **Deterministic**: Same inputs always produce identical outputs
 //! - **Portable**: Works on any platform with a CPU
 //! - **Minimalistic**: Small codebase with no heavy dependencies
+//! - **Configurable Colors**: Support for rainbow, solid, and custom HSV colors
 //!
 //! # Architecture
 //!
@@ -37,8 +38,14 @@
 //! // Initialize the engine
 //! init();
 //!
-//! // Add a light at position (100, 50) with radius 30
-//! const lightCanvas = put(1, 30, 100, 50);
+//! // Add a rainbow light at position (100, 50) with radius 30
+//! const rainbowLight = put(1, 30, 100, 50);
+//!
+//! // Add a red light at position (200, 50) with radius 25
+//! const redLight = put_solid_color(2, 25, 200, 50, 0);
+//!
+//! // Add a desaturated blue light with custom color
+//! const customLight = put_custom_color(3, 20, 150, 100, 170, 128);
 //!
 //! // Set up some obstacles
 //! set_tile(5, 3, 1);
@@ -53,8 +60,14 @@
 //! // Initialize the lighting system
 //! lighting::init();
 //!
-//! // Create a light source
+//! // Create a rainbow light source (default)
 //! let canvas_ptr = lighting::update_or_add_light(1, 30, 100, 50);
+//!
+//! // Create a solid color light source
+//! let red_light = lighting::update_or_add_light_with_solid_color(2, 25, 200, 50, 0);
+//!
+//! // Create a custom HSV color light source
+//! let custom_light = lighting::update_or_add_light_with_custom_color(3, 20, 150, 100, 170, 128);
 //! ```
 //!
 //! # Performance Characteristics
@@ -144,6 +157,7 @@ pub fn start() {
 ///
 /// This is the primary interface for managing lights in the scene.
 /// Each light is identified by a unique ID and can be updated independently.
+/// Uses the default rainbow color mode for backward compatibility.
 ///
 /// # Arguments
 /// * `id` - Unique identifier for this light (0-255)
@@ -174,7 +188,7 @@ pub fn start() {
 /// # Example Usage (JavaScript)
 ///
 /// ```javascript
-/// // Create a red light with radius 50 at position (200, 100)
+/// // Create a rainbow light with radius 50 at position (200, 100)
 /// const lightCanvas = put(0, 50, 200, 100);
 ///
 /// // Later, move the same light to a new position
@@ -183,6 +197,59 @@ pub fn start() {
 #[wasm_bindgen]
 pub fn put(id: u8, r: i16, x: i16, y: i16) -> *const lighting::Color {
     lighting::update_or_add_light(id, r, x, y)
+}
+
+/// Updates an existing light or creates a new one with a solid color.
+///
+/// # Arguments
+/// * `id` - Unique identifier for this light (0-255)
+/// * `r` - Light radius/range in world units
+/// * `x` - World X coordinate of the light center
+/// * `y` - World Y coordinate of the light center
+/// * `hue` - Color hue (0-255, representing 0-360°)
+///
+/// # Returns
+/// A pointer to the light's rendered canvas data (RGBA pixel array).
+///
+/// # Example Usage (JavaScript)
+///
+/// ```javascript
+/// // Create a red light (hue=0) with radius 50 at position (200, 100)
+/// const lightCanvas = put_solid_color(0, 50, 200, 100, 0);
+///
+/// // Create a green light (hue=85) with radius 30 at position (150, 200)
+/// const greenLight = put_solid_color(1, 30, 150, 200, 85);
+/// ```
+#[wasm_bindgen]
+pub fn put_solid_color(id: u8, r: i16, x: i16, y: i16, hue: u8) -> *const lighting::Color {
+    lighting::update_or_add_light_with_solid_color(id, r, x, y, hue)
+}
+
+/// Updates an existing light or creates a new one with custom HSV color.
+///
+/// # Arguments
+/// * `id` - Unique identifier for this light (0-255)
+/// * `r` - Light radius/range in world units
+/// * `x` - World X coordinate of the light center
+/// * `y` - World Y coordinate of the light center
+/// * `hue` - Color hue (0-255, representing 0-360°)
+/// * `saturation` - Color saturation (0-255, 0=grayscale, 255=full color)
+///
+/// # Returns
+/// A pointer to the light's rendered canvas data (RGBA pixel array).
+///
+/// # Example Usage (JavaScript)
+///
+/// ```javascript
+/// // Create a desaturated blue light
+/// const lightCanvas = put_custom_color(0, 50, 200, 100, 170, 128);
+///
+/// // Create a bright cyan light  
+/// const cyanLight = put_custom_color(1, 30, 150, 200, 128, 255);
+/// ```
+#[wasm_bindgen]
+pub fn put_custom_color(id: u8, r: i16, x: i16, y: i16, hue: u8, saturation: u8) -> *const lighting::Color {
+    lighting::update_or_add_light_with_custom_color(id, r, x, y, hue, saturation)
 }
 
 /// Returns a pointer to the world's tile data array.
