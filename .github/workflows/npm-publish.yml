@@ -114,9 +114,10 @@ jobs:
             --out-dir pkg \
             --release
           
-          # Add memory export to the generated JS
+          # Add memory export to the generated JS and TypeScript definitions
           echo "📝 Adding memory export..."
           sed -i '1a export const memory = wasm.memory;' pkg/bresenham_lighting_engine.js
+          sed -i '2a /**\n * Export the memory of the module so we can access it directly\n */\nexport const memory: WebAssembly.Memory;' pkg/bresenham_lighting_engine.d.ts
           
           echo "📊 Build verification:"
           ls -la pkg/
