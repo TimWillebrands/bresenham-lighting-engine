@@ -40,21 +40,35 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Cache Rust dependencies
+      - name: Cache Rust dependencies and tools
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-tools-v1
           restore-keys: |
             ${{ runner.os }}-cargo-
 
       - name: Install wasm-pack and cargo-edit
         run: |
-          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-          cargo install cargo-edit
+          # Only install if not already cached
+          if [ ! -f ~/.cargo/bin/wasm-pack ]; then
+            echo "Installing wasm-pack..."
+            curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          else
+            echo "wasm-pack already installed (cached)"
+          fi
+          
+          if [ ! -f ~/.cargo/bin/cargo-edit ]; then
+            echo "Installing cargo-edit..."
+            cargo install cargo-edit
+          else
+            echo "cargo-edit already installed (cached)"
+          fi
+          
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Setup Node.js
