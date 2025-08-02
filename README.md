@@ -41,7 +41,41 @@ async function main() {
 
 ### Option 2: Build from Source
 
-## Quick Start (for the impatient)
+## Installation
+
+```bash
+npm install bresenham-lighting-engine
+```
+
+## Basic Web Usage 
+
+This requires bundler like Vite to wire up the wasm and stuff. Package it with `wasm-pack build --target web` to get a version that doesn't need bundlers. 
+
+```typescript
+import { memory, put, set_collision_mode } from 'bresenham-lighting-engine';
+
+// Initialize collision detection
+set_collision_mode(1); // 0=tile-based, 1=pixel-based
+
+// Create a light: id=0, radius=50, x=200, y=100
+const lightPtr = put(0, 50, 200, 100);
+
+// Extract pixel data from WASM memory
+const lightSize = 50 * 2 + 1; // radius * 2 + 1
+const pixelData = new Uint8ClampedArray(
+  memory.buffer,
+  lightPtr,
+  lightSize * lightSize * 4 // RGBA
+);
+
+// Render to canvas
+const canvas = document.querySelector('canvas');
+const ctx = canvas.getContext('2d');
+const imageData = new ImageData(pixelData, lightSize, lightSize);
+ctx.putImageData(imageData, 0, 0);
+```
+
+## Development
 
 Install `wasm-pack`:
 ```bash
@@ -50,7 +84,7 @@ cargo install wasm-pack
 
 Build the WASM module:
 ```bash
-wasm-pack build --target web
+wasm-pack build --target bundler
 ```
 
 ## Roadmap (aka "Things I'll Probably Never Do")
