@@ -49,7 +49,7 @@ npm install bresenham-lighting-engine
 
 ## Basic Web Usage 
 
-This requires bundler like Vite to wire up the wasm and stuff. Package it with `wasm-pack build --target web` to get a version that doesn't need bundlers. 
+This requires a bundler like Vite to wire up the wasm and stuff. Package it with `wasm-pack build --target web` to get a version that doesn't need bundlers. 
 
 ```typescript
 import { memory, put, set_collision_mode } from 'bresenham-lighting-engine';
