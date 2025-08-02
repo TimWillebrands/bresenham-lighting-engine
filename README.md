@@ -21,32 +21,6 @@ The core idea is simple:
 - 🎯 **Portable** - Will perhaps work in native game engines
 - ⚡ **Performant** - Surprisingly fast for CPU-based lighting
 
-## Installation
-
-### Option 1: NPM Package (Recommended)
-
-```bash
-npm install bresenham-lighting-engine
-```
-
-```javascript
-import init, { LightingEngine } from 'bresenham-lighting-engine';
-
-async function main() {
-  await init();
-  const engine = new LightingEngine(800, 600);
-  // Start casting rays like it's 1962!
-}
-```
-
-### Option 2: Build from Source
-
-## Installation
-
-```bash
-npm install bresenham-lighting-engine
-```
-
 ## Basic Web Usage 
 
 This requires a bundler like Vite to wire up the wasm and stuff. Package it with `wasm-pack build --target web` to get a version that doesn't need bundlers. 
