@@ -13,7 +13,7 @@ The core idea is simple:
 - Apply light falloff based on distance
 - Render everything with HSV color space because we're fancy like that
 
-## Features that actually slap
+## Features that might possibly slap
 
 ✨ **Zero GPU dependency** - Your integrated graphics can take a nap
 🚀 **WASM-ready** - Runs in browsers without breaking a sweat
