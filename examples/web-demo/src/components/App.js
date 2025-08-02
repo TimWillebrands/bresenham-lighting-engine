@@ -62,7 +62,7 @@ export default function App() {
                 </p>
                 <p>
                     <a
-                        href="https://github.com/your-username/bresenham-lighting-engine"
+                        href="https://github.com/timwillebrands/bresenham-lighting-engine"
                         target="_blank"
                         rel="noopener"
                     >View on GitHub</a>
