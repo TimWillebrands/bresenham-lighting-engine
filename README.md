@@ -15,11 +15,11 @@ The core idea is simple:
 
 ## Features that might possibly slap
 
-✨ **Zero GPU dependency** - Your integrated graphics can take a nap
-🚀 **WASM-ready** - Runs in browsers without breaking a sweat
-📦 **Minimalistic AF** - No bloated dependencies, just pure algorithmic goodness
-🎯 **Portable** - Will perhaps work in native game engines
-⚡ **Performant** - Surprisingly fast for CPU-based lighting
+- ✨ **Zero GPU dependency** - Your integrated graphics can take a nap
+- 🚀 **WASM-ready** - Runs in browsers without breaking a sweat
+- 📦 **Minimalistic AF** - No bloated dependencies, just pure algorithmic goodness
+- 🎯 **Portable** - Will perhaps work in native game engines
+- ⚡ **Performant** - Surprisingly fast for CPU-based lighting
 
 ## Installation
 
