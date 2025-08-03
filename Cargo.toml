@@ -26,6 +26,9 @@ features = [
   "console",
 ]
 
+js-sys = "0.3.69"
+
 [dev-dependencies]
+wasm-bindgen-test = "0.3.42"
 image = "0.24"
 imageproc = "0.23"

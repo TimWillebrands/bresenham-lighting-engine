@@ -82,6 +82,7 @@
 //! scaling roughly linearly with the number of active lights.
 
 use wasm_bindgen::prelude::*;
+use web_sys::js_sys;
 
 // Re-export public modules for library use
 pub mod arctan;
@@ -89,6 +90,7 @@ pub mod block_map;
 pub mod collision;
 pub mod constants;
 pub mod lighting;
+pub mod map_grid;
 pub mod ray;
 
 /// Legacy function pointer type for obstacle detection (deprecated)
@@ -494,6 +496,70 @@ pub use block_map::{init as init_block_map, CellDetails};
 pub use collision::{init as init_collision, CollisionMode};
 pub use constants::*;
 pub use lighting::{init as init_lighting, Color};
+
+#[wasm_bindgen]
+pub struct MapGrid {
+    uf: map_grid::UnionFind,
+}
+
+#[wasm_bindgen]
+impl MapGrid {
+    #[wasm_bindgen(constructor)]
+    pub fn new(map: Vec<i32>, layer_size: usize) -> Self {
+        MapGrid {
+            uf: map_grid::UnionFind::new(map, layer_size),
+        }
+    }
+
+    pub fn get_rooms(&mut self) -> js_sys::Object {
+        let rooms = self.uf.rooms();
+        let js_rooms = js_sys::Object::new();
+
+        for (root, room) in rooms.iter() {
+            let js_room = js_sys::Object::new();
+            let js_points = js_sys::Int32Array::new_with_length(room.points.len() as u32 * 2);
+            for (i, p) in room.points.iter().enumerate() {
+                js_points.set_index(i as u32 * 2, p.x);
+                js_points.set_index(i as u32 * 2 + 1, p.y);
+            }
+            js_sys::Reflect::set(&js_room, &"points".into(), &js_points).unwrap();
+
+            let js_edge_loops = js_sys::Array::new();
+            for edge_loop in room.edge_loops.iter() {
+                let js_edge_loop = js_sys::Int32Array::new_with_length(edge_loop.len() as u32 * 4);
+                for (i, edge) in edge_loop.iter().enumerate() {
+                    js_edge_loop.set_index(i as u32 * 4, edge.0.x);
+                    js_edge_loop.set_index(i as u32 * 4 + 1, edge.0.y);
+                    js_edge_loop.set_index(i as u32 * 4 + 2, edge.1.x);
+                    js_edge_loop.set_index(i as u32 * 4 + 3, edge.1.y);
+                }
+                js_edge_loops.push(&js_edge_loop);
+            }
+            js_sys::Reflect::set(&js_room, &"edgeLoops".into(), &js_edge_loops).unwrap();
+
+            js_sys::Reflect::set(&js_rooms, &root.to_string().into(), &js_room).unwrap();
+        }
+
+        js_rooms
+    }
+
+    pub fn find(&mut self, i: usize) -> usize {
+        self.uf.find(i)
+    }
+
+    pub fn change_tile_type(&mut self, idx: usize, new_type: i32) -> Vec<usize> {
+        let (old_root, new_root) = self.uf.change_tile_type(idx, new_type);
+        vec![old_root, new_root]
+    }
+
+    pub fn cast_ray(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+        self.uf.cast_ray(x1, y1, x2, y2)
+    }
+
+    pub fn path(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> Vec<usize> {
+        self.uf.path(x1, y1, x2, y2)
+    }
+}
 
 #[cfg(test)]
 mod tests {
