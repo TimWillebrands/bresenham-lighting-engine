@@ -1,6 +1,6 @@
 import { html } from 'https://esm.sh/htm/preact';
 
-export default function ControlPanel({ lightConfig, onLightConfigChange }) {
+export default function ControlPanel({ lightConfig, onLightConfigChange, roomsConfigured, onCreateRoomLayout }) {
     const { x, y, radius } = lightConfig;
 
     const handleInputChange = (key) => (e) => {
@@ -57,6 +57,15 @@ export default function ControlPanel({ lightConfig, onLightConfigChange }) {
                     aria-label="Light Radius"
                     onInput=${handleInputChange('radius')}
                 />
+            </div>
+            <div class="control-group">
+                <label for="roomLayout">
+                    Room Layout
+                </label>
+                <button type="button" onclick=${onCreateRoomLayout} disabled=${roomsConfigured}>
+                    ${roomsConfigured ? 'Rooms Configured' : 'Setup Room Layout'}
+                </button>
+                ${roomsConfigured && html`<small>Room-based collision optimization active</small>`}
             </div>
         </form>
     `;

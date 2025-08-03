@@ -9,6 +9,8 @@ export default function LightingDemo({ lighting, initTime }) {
         <${ControlPanel} 
             lightConfig=${lighting.lightConfig}
             onLightConfigChange=${lighting.updateLightConfig}
+            roomsConfigured=${lighting.roomsConfigured}
+            onCreateRoomLayout=${lighting.createSimpleRoomLayout}
         />
 
         <${CanvasContainer}

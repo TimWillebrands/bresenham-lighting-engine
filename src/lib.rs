@@ -82,6 +82,7 @@
 //! scaling roughly linearly with the number of active lights.
 
 use wasm_bindgen::prelude::*;
+use web_sys::js_sys;
 
 // Re-export public modules for library use
 pub mod arctan;
@@ -89,6 +90,7 @@ pub mod block_map;
 pub mod collision;
 pub mod constants;
 pub mod lighting;
+pub mod map_grid;
 pub mod ray;
 
 /// Legacy function pointer type for obstacle detection (deprecated)
@@ -343,51 +345,8 @@ pub fn set_tile(x: u32, y: u32, tile: u8) {
     block_map::set_tile(x, y, tile);
 }
 
-/// Set the collision detection mode for the lighting engine.
-///
-/// Switches between different collision detection strategies to optimize
-/// performance for different use cases.
-///
-/// # Arguments
-/// * `mode` - Collision detection mode:
-///   - 0: Tile-based collision (structured worlds)
-///   - 1: Pixel-based collision (freeform drawing)
-///   - 2: Auto-select based on scenario
-///
-/// # Example Usage (JavaScript)
-/// ```javascript
-/// // Switch to pixel-perfect collision for drawing
-/// set_collision_mode(1);
-/// 
-/// // Switch back to tile-based for structured worlds
-/// set_collision_mode(0);
-/// ```
-#[wasm_bindgen]
-pub fn set_collision_mode(mode: u8) {
-    let collision_mode = match mode {
-        0 => collision::CollisionMode::Tile,
-        1 => collision::CollisionMode::Pixel,
-        2 => collision::CollisionMode::Auto,
-        _ => collision::CollisionMode::Tile, // Default fallback
-    };
-    collision::set_collision_mode(collision_mode);
-}
-
-/// Get the current collision detection mode.
-///
-/// # Returns
-/// Current collision mode as u8:
-/// - 0: Tile-based collision
-/// - 1: Pixel-based collision  
-/// - 2: Auto-select mode
-#[wasm_bindgen]
-pub fn get_collision_mode() -> u8 {
-    match collision::get_collision_mode() {
-        collision::CollisionMode::Tile => 0,
-        collision::CollisionMode::Pixel => 1,
-        collision::CollisionMode::Auto => 2,
-    }
-}
+// Collision detection is now unified around the hybrid pixel + room system
+// No mode configuration is needed - the system adapts based on room configuration
 
 /// Set multiple pixels as blocked or unblocked in a batch operation.
 ///
@@ -461,6 +420,31 @@ pub fn clear_pixel_collisions() {
     collision::clear_collisions();
 }
 
+/// Set map data for room-based collision optimization.
+///
+/// This function configures the room layout for the collision system.
+/// Each cell in the map represents a tile where 0 = blocked (wall) and >0 = open (room).
+/// Contiguous areas with the same non-zero value form rooms.
+///
+/// # Arguments
+/// * `map_data` - Flat array representing the tilemap in row-major order
+/// * `map_size` - Width/height of the square map (e.g. 180 for 180x180)
+///
+/// # Example Usage (JavaScript)
+/// ```javascript
+/// // Create a simple 3x3 map with one room
+/// const mapData = new Int32Array([
+///   0, 0, 0,  // wall row
+///   0, 1, 0,  // room with walls
+///   0, 0, 0   // wall row
+/// ]);
+/// set_map_data(mapData, 3);
+/// ```
+#[wasm_bindgen]
+pub fn set_map_data(map_data: Vec<i32>, map_size: usize) {
+    collision::update_map_data(map_data, map_size);
+}
+
 /// Utility macro for logging debug information to the console.
 ///
 /// This macro provides a convenient way to output debug information
@@ -491,9 +475,73 @@ macro_rules! console_log {
 
 // Re-export commonly used types for convenience
 pub use block_map::{init as init_block_map, CellDetails};
-pub use collision::{init as init_collision, CollisionMode};
+pub use collision::{init as init_collision};
 pub use constants::*;
 pub use lighting::{init as init_lighting, Color};
+
+#[wasm_bindgen]
+pub struct MapGrid {
+    uf: map_grid::UnionFind,
+}
+
+#[wasm_bindgen]
+impl MapGrid {
+    #[wasm_bindgen(constructor)]
+    pub fn new(map: Vec<i32>, layer_size: usize) -> Self {
+        MapGrid {
+            uf: map_grid::UnionFind::new(map, layer_size),
+        }
+    }
+
+    pub fn get_rooms(&mut self) -> js_sys::Object {
+        let rooms = self.uf.rooms();
+        let js_rooms = js_sys::Object::new();
+
+        for (root, room) in rooms.iter() {
+            let js_room = js_sys::Object::new();
+            let js_points = js_sys::Int32Array::new_with_length(room.points.len() as u32 * 2);
+            for (i, p) in room.points.iter().enumerate() {
+                js_points.set_index(i as u32 * 2, p.x);
+                js_points.set_index(i as u32 * 2 + 1, p.y);
+            }
+            js_sys::Reflect::set(&js_room, &"points".into(), &js_points).unwrap();
+
+            let js_edge_loops = js_sys::Array::new();
+            for edge_loop in room.edge_loops.iter() {
+                let js_edge_loop = js_sys::Int32Array::new_with_length(edge_loop.len() as u32 * 4);
+                for (i, edge) in edge_loop.iter().enumerate() {
+                    js_edge_loop.set_index(i as u32 * 4, edge.0.x);
+                    js_edge_loop.set_index(i as u32 * 4 + 1, edge.0.y);
+                    js_edge_loop.set_index(i as u32 * 4 + 2, edge.1.x);
+                    js_edge_loop.set_index(i as u32 * 4 + 3, edge.1.y);
+                }
+                js_edge_loops.push(&js_edge_loop);
+            }
+            js_sys::Reflect::set(&js_room, &"edgeLoops".into(), &js_edge_loops).unwrap();
+
+            js_sys::Reflect::set(&js_rooms, &root.to_string().into(), &js_room).unwrap();
+        }
+
+        js_rooms
+    }
+
+    pub fn find(&mut self, i: usize) -> usize {
+        self.uf.find(i)
+    }
+
+    pub fn change_tile_type(&mut self, idx: usize, new_type: i32) -> Vec<usize> {
+        let (old_root, new_root) = self.uf.change_tile_type(idx, new_type);
+        vec![old_root, new_root]
+    }
+
+    pub fn cast_ray(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+        self.uf.cast_ray(x1, y1, x2, y2)
+    }
+
+    pub fn path(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> Vec<usize> {
+        self.uf.path(x1, y1, x2, y2)
+    }
+}
 
 #[cfg(test)]
 mod tests {

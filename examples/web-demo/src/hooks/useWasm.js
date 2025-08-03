@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'https://esm.sh/preact/hooks';
-import init, { set_collision_mode, get_collision_mode } from '../../pkg/bresenham_lighting_engine.js';
+import init from '../../pkg/bresenham_lighting_engine.js';
 
 export function useWasm() {
     const [wasmModule, setWasmModule] = useState(null);
@@ -34,10 +34,8 @@ export function useWasm() {
                     throw new Error("WASM module memory not available");
                 }
 
-                // Switch to pixel-based collision detection for better performance
-                set_collision_mode(1); // 1 = Pixel mode
-                console.log(`🚀 Switched to pixel-based collision detection for maximum performance`);
-                console.log(`Current collision mode: ${get_collision_mode()}`);
+                // Unified collision system is now active - automatically optimizes based on room configuration
+                console.log(`🚀 Unified collision system initialized - pixel + room optimization ready`);
 
                 setWasmModule(module);
                 setInitTime(initEnd - initStart);

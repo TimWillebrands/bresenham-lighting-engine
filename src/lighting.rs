@@ -21,7 +21,7 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use crate::{arctan, ray};
+use crate::{arctan, ray, collision};
 
 /// Color mode configuration for light sources
 #[derive(Clone, Debug, PartialEq)]
@@ -412,5 +412,17 @@ pub fn init() {
     // Force initialization of the ray lookup table
     Lazy::force(&ALL_RAYS);
 
-    // The LIGHT_MAP is already initialized via Lazy::new(), so no additional setup needed
+    // The LIGHT_MAP and collision system are already initialized via Lazy::new()
+}
+
+/// Updates the map data for the collision system.
+///
+/// This function should be called whenever the underlying tilemap changes
+/// to ensure the room-based collision optimization is up-to-date.
+///
+/// # Arguments
+/// * `map_data` - A flat vector representing the tilemap (0 for blocked, >0 for open).
+/// * `map_size` - The size of the square map (e.g., 180 for 180x180).
+pub fn update_collision_map(map_data: Vec<i32>, map_size: usize) {
+    collision::update_map_data(map_data, map_size);
 }
