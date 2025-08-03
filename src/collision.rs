@@ -21,8 +21,10 @@
 
 use crate::block_map::get_blockmap;
 use crate::constants::{CELLS_PER_ROW, CELLS_TOTAL};
-use std::sync::RwLock;
+use std::sync::{RwLock, Arc};
 use once_cell::sync::Lazy;
+
+use crate::map_grid::UnionFind;
 
 
 
@@ -37,6 +39,8 @@ pub enum CollisionMode {
     Pixel,
     /// Use tile-based collision detection with structured world data  
     Tile,
+    /// Hybrid collision detection using UnionFind for broad-phase and PixelCollisionMap for narrow-phase
+    Hybrid,
     /// Automatically choose best method based on scenario
     Auto,
 }
@@ -250,6 +254,36 @@ impl TileCollisionMap {
     }
 }
 
+/// Hybrid collision detection using UnionFind for broad-phase and PixelCollisionMap for narrow-phase.
+pub struct HybridCollisionMap {
+    union_find: Arc<RwLock<UnionFind>>,
+    pixel_map: PixelCollisionMap,
+    map_size: usize,
+}
+
+impl HybridCollisionMap {
+    /// Create a new hybrid collision map.
+    ///
+    /// # Arguments
+    /// * `map_data` - The initial map data for UnionFind (0 for blocked, >0 for open)
+    /// * `map_size` - The size of the square map (e.g., 180 for 180x180)
+    pub fn new(map_data: Vec<i32>, map_size: usize) -> Self {
+        let uf = UnionFind::new(map_data, map_size);
+        Self {
+            union_find: Arc::new(RwLock::new(uf)),
+            pixel_map: PixelCollisionMap::new(map_size as u16, map_size as u16),
+            map_size,
+        }
+    }
+
+    /// Update the underlying map data for the UnionFind structure.
+    pub fn update_map_data(&mut self, map_data: Vec<i32>, map_size: usize) {
+        if let Ok(mut uf) = self.union_find.write() {
+            *uf = UnionFind::new(map_data, map_size);
+        }
+    }
+}
+
 impl CollisionDetector for TileCollisionMap {
     fn is_blocked(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
         // Use existing block_map collision logic
@@ -329,6 +363,41 @@ impl CollisionDetector for TileCollisionMap {
     }
 }
 
+impl CollisionDetector for HybridCollisionMap {
+    fn is_blocked(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
+        // Broad-phase check with UnionFind
+        if let Ok(mut uf) = self.union_find.write() {
+            if !uf.cast_ray(x0 as i32, y0 as i32, x1 as i32, y1 as i32) {
+                return true; // Ray crosses a room boundary, so it's blocked
+            }
+        }
+
+        // Narrow-phase check with PixelCollisionMap
+        self.pixel_map.is_blocked(x0, y0, x1, y1)
+    }
+
+    fn mode(&self) -> CollisionMode {
+        CollisionMode::Hybrid
+    }
+
+    fn clear(&mut self) {
+        // Clear both UnionFind and PixelCollisionMap
+        if let Ok(mut uf) = self.union_find.write() {
+            // Reinitialize UnionFind with an empty map or default map
+            *uf = UnionFind::new(vec![0; self.map_size * self.map_size], self.map_size);
+        }
+        self.pixel_map.clear();
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
 /// Global collision detection system state.
 ///
 /// Provides thread-safe access to the active collision detector and
@@ -344,6 +413,7 @@ impl CollisionSystem {
         let detector: Box<dyn CollisionDetector> = match mode {
             CollisionMode::Pixel => Box::new(PixelCollisionMap::new(180, 180)), // Default to demo size
             CollisionMode::Tile => Box::new(TileCollisionMap::new()),
+            CollisionMode::Hybrid => Box::new(HybridCollisionMap::new(vec![0; 180*180], 180)), // Default map size
             CollisionMode::Auto => Box::new(TileCollisionMap::new()), // Default to tile for now
         };
 
@@ -356,9 +426,18 @@ impl CollisionSystem {
             self.detector = match mode {
                 CollisionMode::Pixel => Box::new(PixelCollisionMap::new(180, 180)),
                 CollisionMode::Tile => Box::new(TileCollisionMap::new()),
+                CollisionMode::Hybrid => Box::new(HybridCollisionMap::new(vec![0; 180*180], 180)),
                 CollisionMode::Auto => Box::new(TileCollisionMap::new()),
             };
             self.mode = mode;
+        }
+    }
+
+    /// Update the map data for the HybridCollisionMap.
+    /// This function should only be called when the collision mode is Hybrid.
+    pub fn update_hybrid_map_data(&mut self, map_data: Vec<i32>, map_size: usize) {
+        if let Some(hybrid_map) = self.detector_mut().as_any_mut().downcast_mut::<HybridCollisionMap>() {
+            hybrid_map.update_map_data(map_data, map_size);
         }
     }
 

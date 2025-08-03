@@ -382,12 +382,14 @@ pub fn set_collision_mode(mode: u8) {
 /// - 0: Tile-based collision
 /// - 1: Pixel-based collision  
 /// - 2: Auto-select mode
+/// - 3: Hybrid collision
 #[wasm_bindgen]
 pub fn get_collision_mode() -> u8 {
     match collision::get_collision_mode() {
         collision::CollisionMode::Tile => 0,
         collision::CollisionMode::Pixel => 1,
         collision::CollisionMode::Auto => 2,
+        collision::CollisionMode::Hybrid => 3,
     }
 }
 
