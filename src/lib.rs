@@ -355,6 +355,7 @@ pub fn set_tile(x: u32, y: u32, tile: u8) {
 ///   - 0: Tile-based collision (structured worlds)
 ///   - 1: Pixel-based collision (freeform drawing)
 ///   - 2: Auto-select based on scenario
+///   - 3: Hybrid collision (room-based broad-phase, pixel-based narrow-phase)
 ///
 /// # Example Usage (JavaScript)
 /// ```javascript
@@ -363,6 +364,9 @@ pub fn set_tile(x: u32, y: u32, tile: u8) {
 /// 
 /// // Switch back to tile-based for structured worlds
 /// set_collision_mode(0);
+/// 
+/// // Switch to hybrid mode for room-based collision
+/// set_collision_mode(3);
 /// ```
 #[wasm_bindgen]
 pub fn set_collision_mode(mode: u8) {
@@ -370,6 +374,7 @@ pub fn set_collision_mode(mode: u8) {
         0 => collision::CollisionMode::Tile,
         1 => collision::CollisionMode::Pixel,
         2 => collision::CollisionMode::Auto,
+        3 => collision::CollisionMode::Hybrid,
         _ => collision::CollisionMode::Tile, // Default fallback
     };
     collision::set_collision_mode(collision_mode);

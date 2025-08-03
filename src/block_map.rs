@@ -91,6 +91,18 @@ pub fn get_tiles() -> *const u8 {
     }
 }
 
+/// Returns a copy of the current tile data as a `Vec<i32>`.
+///
+/// This function is useful for passing the tilemap data to other modules
+/// that require a `Vec<i32>` representation (e.g., UnionFind).
+pub fn get_tiles_vec_i32() -> Vec<i32> {
+    if let Ok(tiles) = TILES.read() {
+        tiles.iter().map(|&x| x as i32).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Returns a pointer to the cell blocking data for WASM interoperability.
 ///
 /// This function provides direct access to the cell blocking information
@@ -147,6 +159,16 @@ pub fn set_tile(x: u32, y: u32, tile: u8) {
 
     // Recalculate blocking information
     update_blockmap();
+
+    // If in hybrid mode, update the collision map with the new tile data
+    use crate::collision::{self, CollisionMode};
+    use crate::constants::TILES_PER_ROW;
+    use crate::lighting;
+
+    if collision::get_collision_mode() == CollisionMode::Hybrid {
+        let tiles_vec = get_tiles_vec_i32();
+        lighting::update_collision_map(tiles_vec, TILES_PER_ROW);
+    }
 }
 
 /// Recalculates blocking information for all tiles in the world.

@@ -9,6 +9,8 @@ export default function LightingDemo({ lighting, initTime }) {
         <${ControlPanel} 
             lightConfig=${lighting.lightConfig}
             onLightConfigChange=${lighting.updateLightConfig}
+            collisionMode=${lighting.collisionMode}
+            onCollisionModeChange=${lighting.setCollisionMode}
         />
 
         <${CanvasContainer}

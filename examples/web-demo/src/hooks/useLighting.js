@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'https://esm.sh/preact/hooks';
-import { put, set_pixel, clear_pixel_collisions } from '../../pkg/bresenham_lighting_engine.js';
+import { put, set_pixel, clear_pixel_collisions, set_collision_mode } from '../../pkg/bresenham_lighting_engine.js';
 
 export function useLighting(wasmModule) {
     const [lightConfig, setLightConfig] = useState({
@@ -7,6 +7,13 @@ export function useLighting(wasmModule) {
         y: 80,
         radius: 40
     });
+
+    const [collisionMode, setCollisionModeState] = useState(3); // Default to Hybrid
+
+    const setCollisionMode = useCallback((mode) => {
+        setCollisionModeState(mode);
+        set_collision_mode(mode);
+    }, []);
 
 
 
@@ -168,6 +175,13 @@ export function useLighting(wasmModule) {
         }
     }, [wasmModule, lightConfig]); // Removed updateLighting from deps to prevent cycles
 
+    // Set initial collision mode to Hybrid when WASM module is available
+    useEffect(() => {
+        if (wasmModule) {
+            set_collision_mode(3); // Set to Hybrid mode
+        }
+    }, [wasmModule]);
+
     return {
         lightConfig,
         updateLightConfig,
@@ -177,6 +191,8 @@ export function useLighting(wasmModule) {
         clearWalls,
         updateLighting,
         canvasRef,
-        wallsCanvasRef
+        wallsCanvasRef,
+        collisionMode,
+        setCollisionMode
     };
 } 
