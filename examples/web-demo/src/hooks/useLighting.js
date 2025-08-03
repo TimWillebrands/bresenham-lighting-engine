@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'https://esm.sh/preact/hooks';
-import { put, set_pixel, clear_pixel_collisions, set_collision_mode } from '../../pkg/bresenham_lighting_engine.js';
+import { put, set_pixel, clear_pixel_collisions, set_map_data } from '../../pkg/bresenham_lighting_engine.js';
 
 export function useLighting(wasmModule) {
     const [lightConfig, setLightConfig] = useState({
@@ -8,11 +8,62 @@ export function useLighting(wasmModule) {
         radius: 40
     });
 
-    const [collisionMode, setCollisionModeState] = useState(3); // Default to Hybrid
+    // Room layout setup - collision detection is now unified
+    const [roomsConfigured, setRoomsConfigured] = useState(false);
 
-    const setCollisionMode = useCallback((mode) => {
-        setCollisionModeState(mode);
-        set_collision_mode(mode);
+    const createSimpleRoomLayout = useCallback(() => {
+        const mapSize = 180;
+        const mapData = new Int32Array(mapSize * mapSize);
+        
+        // Create a simple room layout with 3 rooms and walls
+        for (let y = 0; y < mapSize; y++) {
+            for (let x = 0; x < mapSize; x++) {
+                const idx = y * mapSize + x;
+                
+                // Create border walls
+                if (x === 0 || x === mapSize - 1 || y === 0 || y === mapSize - 1) {
+                    mapData[idx] = 0; // Wall
+                }
+                // Vertical wall divider at x = 60
+                else if (x === 60 && y > 20 && y < mapSize - 20) {
+                    mapData[idx] = 0; // Wall
+                }
+                // Horizontal wall divider at y = 90
+                else if (y === 90 && x > 60 && x < mapSize - 20) {
+                    mapData[idx] = 0; // Wall
+                }
+                // Room 1: left side
+                else if (x < 60) {
+                    mapData[idx] = 1; // Room 1
+                }
+                // Room 2: top right
+                else if (x > 60 && y < 90) {
+                    mapData[idx] = 2; // Room 2
+                }
+                // Room 3: bottom right
+                else if (x > 60 && y > 90) {
+                    mapData[idx] = 3; // Room 3
+                }
+                else {
+                    mapData[idx] = 1; // Default to room 1
+                }
+            }
+        }
+        
+        // Add some doorways
+        // Door between room 1 and room 2
+        for (let y = 40; y < 50; y++) {
+            mapData[y * mapSize + 60] = 1; // Open the wall
+        }
+        
+        // Door between room 2 and room 3
+        for (let x = 100; x < 110; x++) {
+            mapData[90 * mapSize + x] = 2; // Open the wall
+        }
+        
+        set_map_data(Array.from(mapData), mapSize);
+        setRoomsConfigured(true);
+        console.log("Created simple room layout for collision optimization");
     }, []);
 
 
@@ -175,12 +226,12 @@ export function useLighting(wasmModule) {
         }
     }, [wasmModule, lightConfig]); // Removed updateLighting from deps to prevent cycles
 
-    // Set initial collision mode to Hybrid when WASM module is available
+    // Initialize room layout when WASM module is available
     useEffect(() => {
         if (wasmModule) {
-            set_collision_mode(3); // Set to Hybrid mode
+            createSimpleRoomLayout(); // Initialize room layout for optimization
         }
-    }, [wasmModule]);
+    }, [wasmModule, createSimpleRoomLayout]);
 
     return {
         lightConfig,
@@ -192,7 +243,7 @@ export function useLighting(wasmModule) {
         updateLighting,
         canvasRef,
         wallsCanvasRef,
-        collisionMode,
-        setCollisionMode
+        roomsConfigured,
+        createSimpleRoomLayout
     };
 } 

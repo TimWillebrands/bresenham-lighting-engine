@@ -28,22 +28,8 @@ use crate::map_grid::UnionFind;
 
 
 
-/// Collision detection strategy enumeration.
-///
-/// Determines which collision detection method to use for ray casting.
-/// Different strategies offer trade-offs between precision, performance,
-/// and memory usage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CollisionMode {
-    /// Use pixel-perfect collision detection with bitmap storage
-    Pixel,
-    /// Use tile-based collision detection with structured world data  
-    Tile,
-    /// Hybrid collision detection using UnionFind for broad-phase and PixelCollisionMap for narrow-phase
-    Hybrid,
-    /// Automatically choose best method based on scenario
-    Auto,
-}
+// Collision detection is now unified around the hybrid pixel + room system
+// No mode selection is needed - the system adapts based on room configuration
 
 /// Core trait for collision detection implementations.
 ///
@@ -64,8 +50,7 @@ pub trait CollisionDetector: Send + Sync {
     /// `true` if the ray is blocked by any obstacle, `false` if clear
     fn is_blocked(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> bool;
 
-    /// Get the collision mode identifier for this detector.
-    fn mode(&self) -> CollisionMode;
+
 
     /// Clear all collision data (implementation-specific behavior).
     fn clear(&mut self);
@@ -220,9 +205,7 @@ impl CollisionDetector for PixelCollisionMap {
         false
     }
 
-    fn mode(&self) -> CollisionMode {
-        CollisionMode::Pixel
-    }
+    // Unified collision system - no mode differentiation needed
 
     fn clear(&mut self) {
         self.pixels.fill(0);
@@ -281,6 +264,11 @@ impl HybridCollisionMap {
         if let Ok(mut uf) = self.union_find.write() {
             *uf = UnionFind::new(map_data, map_size);
         }
+    }
+
+    /// Get a mutable reference to the pixel collision map.
+    pub fn pixel_map_mut(&mut self) -> &mut PixelCollisionMap {
+        &mut self.pixel_map
     }
 }
 
@@ -344,9 +332,7 @@ impl CollisionDetector for TileCollisionMap {
         false
     }
 
-    fn mode(&self) -> CollisionMode {
-        CollisionMode::Tile
-    }
+    // Legacy tile collision - kept for reference but not used
 
     fn clear(&mut self) {
         // Tile collision map uses global block_map data
@@ -376,9 +362,7 @@ impl CollisionDetector for HybridCollisionMap {
         self.pixel_map.is_blocked(x0, y0, x1, y1)
     }
 
-    fn mode(&self) -> CollisionMode {
-        CollisionMode::Hybrid
-    }
+    // Unified hybrid collision system
 
     fn clear(&mut self) {
         // Clear both UnionFind and PixelCollisionMap
@@ -400,69 +384,49 @@ impl CollisionDetector for HybridCollisionMap {
 
 /// Global collision detection system state.
 ///
-/// Provides thread-safe access to the active collision detector and
-/// mode switching capabilities.
+/// Uses a unified hybrid collision system combining room-based broad-phase
+/// and pixel-based narrow-phase collision detection.
 pub struct CollisionSystem {
-    detector: Box<dyn CollisionDetector>,
-    mode: CollisionMode,
+    detector: HybridCollisionMap,
 }
 
 impl CollisionSystem {
-    /// Create a new collision system with the specified mode.
-    fn new(mode: CollisionMode) -> Self {
-        let detector: Box<dyn CollisionDetector> = match mode {
-            CollisionMode::Pixel => Box::new(PixelCollisionMap::new(180, 180)), // Default to demo size
-            CollisionMode::Tile => Box::new(TileCollisionMap::new()),
-            CollisionMode::Hybrid => Box::new(HybridCollisionMap::new(vec![0; 180*180], 180)), // Default map size
-            CollisionMode::Auto => Box::new(TileCollisionMap::new()), // Default to tile for now
-        };
+    /// Create a new collision system with default hybrid detector.
+    fn new() -> Self {
+        // Start with a simple open area - no rooms configured initially
+        let map_size = 180;
+        let map_data = vec![1; map_size * map_size]; // All open (room 1)
+        let detector = HybridCollisionMap::new(map_data, map_size);
 
-        Self { detector, mode }
+        Self { detector }
     }
 
-    /// Switch collision detection mode.
-    pub fn set_mode(&mut self, mode: CollisionMode) {
-        if mode != self.mode {
-            self.detector = match mode {
-                CollisionMode::Pixel => Box::new(PixelCollisionMap::new(180, 180)),
-                CollisionMode::Tile => Box::new(TileCollisionMap::new()),
-                CollisionMode::Hybrid => Box::new(HybridCollisionMap::new(vec![0; 180*180], 180)),
-                CollisionMode::Auto => Box::new(TileCollisionMap::new()),
-            };
-            self.mode = mode;
-        }
-    }
-
-    /// Update the map data for the HybridCollisionMap.
-    /// This function should only be called when the collision mode is Hybrid.
-    pub fn update_hybrid_map_data(&mut self, map_data: Vec<i32>, map_size: usize) {
-        if let Some(hybrid_map) = self.detector_mut().as_any_mut().downcast_mut::<HybridCollisionMap>() {
-            hybrid_map.update_map_data(map_data, map_size);
-        }
+    /// Update the map data for room-based collision.
+    ///
+    /// # Arguments
+    /// * `map_data` - Room layout where 0 = wall, >0 = room ID
+    /// * `map_size` - Width/height of the square map
+    pub fn update_map_data(&mut self, map_data: Vec<i32>, map_size: usize) {
+        self.detector.update_map_data(map_data, map_size);
     }
 
     /// Get the current collision detector.
-    pub fn detector(&self) -> &dyn CollisionDetector {
-        self.detector.as_ref()
+    pub fn detector(&self) -> &HybridCollisionMap {
+        &self.detector
     }
 
     /// Get mutable access to the current collision detector.
-    pub fn detector_mut(&mut self) -> &mut dyn CollisionDetector {
-        self.detector.as_mut()
-    }
-
-    /// Get the current collision mode.
-    pub fn mode(&self) -> CollisionMode {
-        self.mode
+    pub fn detector_mut(&mut self) -> &mut HybridCollisionMap {
+        &mut self.detector
     }
 }
 
 /// Global collision system instance.
 ///
-/// Thread-safe access to the collision detection system used by the
-/// lighting engine for ray casting collision checks.
+/// Thread-safe access to the unified hybrid collision detection system
+/// used by the lighting engine for ray casting collision checks.
 pub static COLLISION_SYSTEM: Lazy<RwLock<CollisionSystem>> = 
-    Lazy::new(|| RwLock::new(CollisionSystem::new(CollisionMode::Tile)));
+    Lazy::new(|| RwLock::new(CollisionSystem::new()));
 
 /// Check if a line segment is blocked using the active collision detector.
 ///
@@ -484,22 +448,14 @@ pub fn is_blocked(x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
     }
 }
 
-/// Set the collision detection mode.
+/// Update the map data for room-based collision.
 ///
 /// # Arguments
-/// * `mode` - The collision detection mode to use
-pub fn set_collision_mode(mode: CollisionMode) {
+/// * `map_data` - Room layout where 0 = wall, >0 = room ID
+/// * `map_size` - Width/height of the square map
+pub fn update_map_data(map_data: Vec<i32>, map_size: usize) {
     if let Ok(mut system) = COLLISION_SYSTEM.write() {
-        system.set_mode(mode);
-    }
-}
-
-/// Get the current collision detection mode.
-pub fn get_collision_mode() -> CollisionMode {
-    if let Ok(system) = COLLISION_SYSTEM.read() {
-        system.mode()
-    } else {
-        CollisionMode::Tile // Default fallback
+        system.update_map_data(map_data, map_size);
     }
 }
 
@@ -510,42 +466,40 @@ pub fn clear_collisions() {
     }
 }
 
-/// Set a single pixel in the collision map if in pixel mode.
+/// Set a single pixel in the collision map.
 ///
 /// # Arguments
 /// * `x`, `y` - Pixel coordinates
 /// * `blocked` - Whether the pixel should block light rays
 ///
 /// # Returns
-/// `true` if the pixel was set successfully, `false` if not in pixel mode
+/// `true` if the pixel was set successfully
 pub fn set_pixel(x: u16, y: u16, blocked: bool) -> bool {
     if let Ok(mut system) = COLLISION_SYSTEM.write() {
-        if let Some(pixel_map) = system.detector_mut().as_any_mut().downcast_mut::<PixelCollisionMap>() {
-            pixel_map.set_pixel(x, y, blocked);
-            return true;
-        }
+        system.detector_mut().pixel_map_mut().set_pixel(x, y, blocked);
+        true
+    } else {
+        false
     }
-    false
 }
 
-/// Set multiple pixels in batch if in pixel mode.
+/// Set multiple pixels in batch.
 ///
 /// # Arguments
 /// * `pixels` - Iterator of (x, y, blocked) tuples
 ///
 /// # Returns
-/// `true` if the pixels were set successfully, `false` if not in pixel mode
+/// `true` if the pixels were set successfully
 pub fn set_pixel_batch<I>(pixels: I) -> bool 
 where
     I: IntoIterator<Item = (u16, u16, bool)>,
 {
     if let Ok(mut system) = COLLISION_SYSTEM.write() {
-        if let Some(pixel_map) = system.detector_mut().as_any_mut().downcast_mut::<PixelCollisionMap>() {
-            pixel_map.set_pixel_batch(pixels);
-            return true;
-        }
+        system.detector_mut().pixel_map_mut().set_pixel_batch(pixels);
+        true
+    } else {
+        false
     }
-    false
 }
 
 /// Initialize the collision detection system.
@@ -606,12 +560,14 @@ mod tests {
     }
 
     #[test]
-    fn test_collision_mode_switching() {
-        set_collision_mode(CollisionMode::Pixel);
-        assert_eq!(get_collision_mode(), CollisionMode::Pixel);
+    fn test_unified_collision_system() {
+        // Test that the unified system works without mode switching
+        clear_collisions();
+        let _blocked = is_blocked(0, 0, 10, 10);
         
-        set_collision_mode(CollisionMode::Tile);
-        assert_eq!(get_collision_mode(), CollisionMode::Tile);
+        // Test pixel setting
+        assert!(set_pixel(5, 5, true));
+        assert!(set_pixel(5, 5, false));
     }
 
     #[test]

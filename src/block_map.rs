@@ -160,15 +160,13 @@ pub fn set_tile(x: u32, y: u32, tile: u8) {
     // Recalculate blocking information
     update_blockmap();
 
-    // If in hybrid mode, update the collision map with the new tile data
-    use crate::collision::{self, CollisionMode};
+    // Update the unified collision system with the new tile data
     use crate::constants::TILES_PER_ROW;
     use crate::lighting;
 
-    if collision::get_collision_mode() == CollisionMode::Hybrid {
-        let tiles_vec = get_tiles_vec_i32();
-        lighting::update_collision_map(tiles_vec, TILES_PER_ROW);
-    }
+    // Always update the collision map since we now use the unified system
+    let tiles_vec = get_tiles_vec_i32();
+    lighting::update_collision_map(tiles_vec, TILES_PER_ROW);
 }
 
 /// Recalculates blocking information for all tiles in the world.

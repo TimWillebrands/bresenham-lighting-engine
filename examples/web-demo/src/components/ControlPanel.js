@@ -1,15 +1,11 @@
 import { html } from 'https://esm.sh/htm/preact';
 
-export default function ControlPanel({ lightConfig, onLightConfigChange, collisionMode, onCollisionModeChange }) {
+export default function ControlPanel({ lightConfig, onLightConfigChange, roomsConfigured, onCreateRoomLayout }) {
     const { x, y, radius } = lightConfig;
 
     const handleInputChange = (key) => (e) => {
         const value = parseInt(e.target.value);
         onLightConfigChange({ [key]: value });
-    };
-
-    const handleCollisionModeChange = (e) => {
-        onCollisionModeChange(parseInt(e.target.value));
     };
 
     return html`
@@ -63,14 +59,13 @@ export default function ControlPanel({ lightConfig, onLightConfigChange, collisi
                 />
             </div>
             <div class="control-group">
-                <label for="collisionMode">
-                    Collision Mode
+                <label for="roomLayout">
+                    Room Layout
                 </label>
-                <select id="collisionMode" name="collisionMode" onchange=${handleCollisionModeChange}>
-                    <option value="0" selected=${collisionMode === 0}>Tile</option>
-                    <option value="1" selected=${collisionMode === 1}>Pixel</option>
-                    <option value="3" selected=${collisionMode === 3}>Hybrid</option>
-                </select>
+                <button type="button" onclick=${onCreateRoomLayout} disabled=${roomsConfigured}>
+                    ${roomsConfigured ? 'Rooms Configured' : 'Setup Room Layout'}
+                </button>
+                ${roomsConfigured && html`<small>Room-based collision optimization active</small>`}
             </div>
         </form>
     `;

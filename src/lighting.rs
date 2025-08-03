@@ -412,22 +412,17 @@ pub fn init() {
     // Force initialization of the ray lookup table
     Lazy::force(&ALL_RAYS);
 
-    // Set collision mode to Hybrid by default
-    collision::set_collision_mode(collision::CollisionMode::Hybrid);
-
-    // The LIGHT_MAP is already initialized via Lazy::new(), so no additional setup needed
+    // The LIGHT_MAP and collision system are already initialized via Lazy::new()
 }
 
-/// Updates the map data for the hybrid collision system.
+/// Updates the map data for the collision system.
 ///
 /// This function should be called whenever the underlying tilemap changes
-/// to ensure the UnionFind structure is up-to-date.
+/// to ensure the room-based collision optimization is up-to-date.
 ///
 /// # Arguments
 /// * `map_data` - A flat vector representing the tilemap (0 for blocked, >0 for open).
 /// * `map_size` - The size of the square map (e.g., 180 for 180x180).
 pub fn update_collision_map(map_data: Vec<i32>, map_size: usize) {
-    if let Ok(mut system) = collision::COLLISION_SYSTEM.write() {
-        system.update_hybrid_map_data(map_data, map_size);
-    }
+    collision::update_map_data(map_data, map_size);
 }

@@ -345,58 +345,8 @@ pub fn set_tile(x: u32, y: u32, tile: u8) {
     block_map::set_tile(x, y, tile);
 }
 
-/// Set the collision detection mode for the lighting engine.
-///
-/// Switches between different collision detection strategies to optimize
-/// performance for different use cases.
-///
-/// # Arguments
-/// * `mode` - Collision detection mode:
-///   - 0: Tile-based collision (structured worlds)
-///   - 1: Pixel-based collision (freeform drawing)
-///   - 2: Auto-select based on scenario
-///   - 3: Hybrid collision (room-based broad-phase, pixel-based narrow-phase)
-///
-/// # Example Usage (JavaScript)
-/// ```javascript
-/// // Switch to pixel-perfect collision for drawing
-/// set_collision_mode(1);
-/// 
-/// // Switch back to tile-based for structured worlds
-/// set_collision_mode(0);
-/// 
-/// // Switch to hybrid mode for room-based collision
-/// set_collision_mode(3);
-/// ```
-#[wasm_bindgen]
-pub fn set_collision_mode(mode: u8) {
-    let collision_mode = match mode {
-        0 => collision::CollisionMode::Tile,
-        1 => collision::CollisionMode::Pixel,
-        2 => collision::CollisionMode::Auto,
-        3 => collision::CollisionMode::Hybrid,
-        _ => collision::CollisionMode::Tile, // Default fallback
-    };
-    collision::set_collision_mode(collision_mode);
-}
-
-/// Get the current collision detection mode.
-///
-/// # Returns
-/// Current collision mode as u8:
-/// - 0: Tile-based collision
-/// - 1: Pixel-based collision  
-/// - 2: Auto-select mode
-/// - 3: Hybrid collision
-#[wasm_bindgen]
-pub fn get_collision_mode() -> u8 {
-    match collision::get_collision_mode() {
-        collision::CollisionMode::Tile => 0,
-        collision::CollisionMode::Pixel => 1,
-        collision::CollisionMode::Auto => 2,
-        collision::CollisionMode::Hybrid => 3,
-    }
-}
+// Collision detection is now unified around the hybrid pixel + room system
+// No mode configuration is needed - the system adapts based on room configuration
 
 /// Set multiple pixels as blocked or unblocked in a batch operation.
 ///
@@ -470,6 +420,31 @@ pub fn clear_pixel_collisions() {
     collision::clear_collisions();
 }
 
+/// Set map data for room-based collision optimization.
+///
+/// This function configures the room layout for the collision system.
+/// Each cell in the map represents a tile where 0 = blocked (wall) and >0 = open (room).
+/// Contiguous areas with the same non-zero value form rooms.
+///
+/// # Arguments
+/// * `map_data` - Flat array representing the tilemap in row-major order
+/// * `map_size` - Width/height of the square map (e.g. 180 for 180x180)
+///
+/// # Example Usage (JavaScript)
+/// ```javascript
+/// // Create a simple 3x3 map with one room
+/// const mapData = new Int32Array([
+///   0, 0, 0,  // wall row
+///   0, 1, 0,  // room with walls
+///   0, 0, 0   // wall row
+/// ]);
+/// set_map_data(mapData, 3);
+/// ```
+#[wasm_bindgen]
+pub fn set_map_data(map_data: Vec<i32>, map_size: usize) {
+    collision::update_map_data(map_data, map_size);
+}
+
 /// Utility macro for logging debug information to the console.
 ///
 /// This macro provides a convenient way to output debug information
@@ -500,7 +475,7 @@ macro_rules! console_log {
 
 // Re-export commonly used types for convenience
 pub use block_map::{init as init_block_map, CellDetails};
-pub use collision::{init as init_collision, CollisionMode};
+pub use collision::{init as init_collision};
 pub use constants::*;
 pub use lighting::{init as init_lighting, Color};
 

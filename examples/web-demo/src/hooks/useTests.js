@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'https://esm.sh/preact/hooks';
-import { put, set_collision_mode, get_collision_mode, set_pixel, clear_pixel_collisions } from '../../pkg/bresenham_lighting_engine.js';
+import { put, set_pixel, clear_pixel_collisions } from '../../pkg/bresenham_lighting_engine.js';
 
 export function useTests(wasmModule) {
     const [testStates, setTestStates] = useState({
@@ -39,17 +39,10 @@ export function useTests(wasmModule) {
             updateTestState('collision', { status: '⏳ Testing collision system...', className: '' });
             clearTestLog('collision');
             
-            // Test mode switching
-            const initialMode = get_collision_mode();
-            logToTest('collision', `Initial collision mode: ${initialMode}`);
+            // The unified collision system is always active - no mode switching needed
+            logToTest('collision', 'Unified collision system active - pixel + room optimization');
             
-            set_collision_mode(1); // Pixel mode
-            const pixelMode = get_collision_mode();
-            logToTest('collision', `Switched to pixel mode: ${pixelMode}`);
-            
-            if (pixelMode !== 1) {
-                throw new Error(`Expected pixel mode (1), got ${pixelMode}`);
-            }
+            // Collision system is unified - no mode validation needed
             
             // Test pixel setting
             set_pixel(50, 50, 1); // Add obstacle

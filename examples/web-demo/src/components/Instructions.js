@@ -25,6 +25,8 @@ export default function Instructions() {
                 <strong>💡 Pro Tip:</strong> Try creating complex shapes and
                 watch how the CPU-based ray casting creates realistic
                 lighting and shadows without any GPU acceleration!
+                The engine uses a unified collision system that optimizes 
+                performance with room-based broad-phase collision detection.
             </div>
         </div>
     `;
