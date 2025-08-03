@@ -13,39 +13,13 @@ The core idea is simple:
 - Apply light falloff based on distance
 - Render everything with HSV color space because we're fancy like that
 
-## Features that actually slap
+## Features that might possibly slap
 
-✨ **Zero GPU dependency** - Your integrated graphics can take a nap
-🚀 **WASM-ready** - Runs in browsers without breaking a sweat
-📦 **Minimalistic AF** - No bloated dependencies, just pure algorithmic goodness
-🎯 **Portable** - Will perhaps work in native game engines
-⚡ **Performant** - Surprisingly fast for CPU-based lighting
-
-## Installation
-
-### Option 1: NPM Package (Recommended)
-
-```bash
-npm install bresenham-lighting-engine
-```
-
-```javascript
-import init, { LightingEngine } from 'bresenham-lighting-engine';
-
-async function main() {
-  await init();
-  const engine = new LightingEngine(800, 600);
-  // Start casting rays like it's 1962!
-}
-```
-
-### Option 2: Build from Source
-
-## Installation
-
-```bash
-npm install bresenham-lighting-engine
-```
+- ✨ **Zero GPU dependency** - Your integrated graphics can take a nap
+- 🚀 **WASM-ready** - Runs in browsers without breaking a sweat
+- 📦 **Minimalistic AF** - No bloated dependencies, just pure algorithmic goodness
+- 🎯 **Portable** - Will perhaps work in native game engines
+- ⚡ **Performant** - Surprisingly fast for CPU-based lighting
 
 ## Basic Web Usage 
 
