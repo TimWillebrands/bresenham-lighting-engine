@@ -1,0 +1,7 @@
+# The lighting engine builds a large precomputed ray table (`ALL_RAYS` in
+# `src/lighting.rs`) on first use. In test builds it lives on the thread
+# stack during construction, which overflows the default 2 MiB. Setting
+# `RUST_MIN_STACK` here removes the foot-gun — invoking `cargo test`
+# directly just works without remembering the env var.
+[env]
+RUST_MIN_STACK = "8388608"

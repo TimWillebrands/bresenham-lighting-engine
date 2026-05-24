@@ -25,11 +25,25 @@ The core idea is simple:
 
 This requires a bundler like Vite to wire up the wasm and stuff. Package it with `wasm-pack build --target web` to get a version that doesn't need bundlers. 
 
-```typescript
-import { memory, put, set_collision_mode } from 'bresenham-lighting-engine';
+The engine has two ways to block light, and they exist for different things:
 
-// Initialize collision detection
-set_collision_mode(1); // 0=tile-based, 1=pixel-based
+- **`set_pixel(x, y, blocked)`** marks a single cell of the 180×180 grid as
+  an in-world object — a chair, a barrel, a character. Use this for stuff
+  that moves or gets placed at runtime.
+- **`set_tile(tx, ty, type)`** / **`set_map_data(types, size)`** define the
+  coarse 30×30 tile layout. Boundaries between tiles of different types
+  become walls automatically, and contiguous same-type tiles form rooms
+  used to skip occluded rays cheaply. Use this for architecture.
+
+```typescript
+import { memory, put, set_pixel, set_tile } from 'bresenham-lighting-engine';
+
+// Architecture: tile (5,3) is type 1, surrounded by type 0 → walls on all
+// four sides of that tile.
+set_tile(5, 3, 1);
+
+// A runtime object: mark the cell at (120, 90) as blocking.
+set_pixel(120, 90, 1);
 
 // Create a light: id=0, radius=50, x=200, y=100
 const lightPtr = put(0, 50, 200, 100);
@@ -48,6 +62,23 @@ const ctx = canvas.getContext('2d');
 const imageData = new ImageData(pixelData, lightSize, lightSize);
 ctx.putImageData(imageData, 0, 0);
 ```
+
+## Visual feedback & scenarios
+
+Scenarios live in [`src/scenarios/`](src/scenarios/mod.rs) as plain Rust
+functions taking `&mut LightingEngine`. They are shared by:
+
+- **Exploration loop** — `cargo run --example scenario -- --name single_light`
+  prints an ASCII matrix of the resulting canvas to stdout. Pass
+  `--output-format png --out path.png` to render a PNG, or `--list` to see
+  what's defined.
+- **Regression loop** — `cargo test --test scenarios` runs invariant-based
+  assertions. Failures embed the ASCII matrix in the panic message so the
+  output is self-explanatory.
+
+See [`CONTEXT.md`](CONTEXT.md) for the canonical vocabulary
+(Tile/Cell/Wall/Object/Room/LightingEngine/Light/Canvas/Ray) and
+[`docs/decisions/`](docs/decisions/) for ADRs.
 
 ## Development
 

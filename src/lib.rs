@@ -89,16 +89,13 @@ pub mod arctan;
 pub mod block_map;
 pub mod collision;
 pub mod constants;
+pub mod engine;
 pub mod lighting;
 pub mod map_grid;
 pub mod ray;
+pub mod scenarios;
 
-/// Legacy function pointer type for obstacle detection (deprecated)
-/// 
-/// This type is kept for backwards compatibility but is no longer used.
-/// The new collision detection system uses the `collision` module instead.
-#[deprecated(note = "Use collision::is_blocked instead")]
-pub type IsBlockedFn = fn(i16, i16, i16, i16) -> bool;
+pub use engine::LightingEngine;
 
 /// External JavaScript function for logging debug information.
 ///
@@ -108,15 +105,6 @@ pub type IsBlockedFn = fn(i16, i16, i16, i16) -> bool;
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log_from_js(s: &str);
-}
-
-/// Legacy function to reset the obstacle detection function (deprecated)
-///
-/// This function is kept for backwards compatibility but does nothing.
-/// Use the new collision detection system instead.
-#[deprecated(note = "Use collision::set_collision_mode instead")]
-pub fn reset_is_blocked_fn() {
-    // No-op: the new collision system doesn't use function pointers
 }
 
 /// Export a logging function for JavaScript use.
