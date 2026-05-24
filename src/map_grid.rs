@@ -62,6 +62,10 @@ impl UnionFind {
         }
     }
 
+    pub fn get_tile(&self, idx: usize) -> i32 {
+        *self.map.get(idx).unwrap_or(&-1)
+    }
+
     pub fn find(&mut self, i: usize) -> usize {
         if self.parent[i] == i {
             i
@@ -273,6 +277,15 @@ impl UnionFind {
     }
 
     pub fn cast_ray(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+        let size = self.layer_size as i32;
+        let in_bounds = |x: i32, y: i32| x >= 0 && y >= 0 && x < size && y < size;
+
+        // Endpoints outside the room map can't be classified; defer to the
+        // narrow phase rather than panicking on a wrapped usize index.
+        if !in_bounds(x1, y1) || !in_bounds(x2, y2) {
+            return true;
+        }
+
         let dx = x2 - x1;
         let dy = y2 - y1;
         let nx = dx.abs();
@@ -294,6 +307,10 @@ impl UnionFind {
             } else {
                 p.y += sy;
                 iy += 1;
+            }
+
+            if !in_bounds(p.x, p.y) {
+                return true;
             }
 
             let next = self.index(p.x, p.y);

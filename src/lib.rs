@@ -116,6 +116,25 @@ pub fn log(message: &str) {
     log_from_js(message);
 }
 
+/// Returns the WebAssembly.Memory object backing this module so JS callers
+/// can construct typed-array views over pointers returned by other exports
+/// (e.g. the canvas pointer from `put`).
+#[wasm_bindgen]
+pub fn wasm_memory() -> JsValue {
+    wasm_bindgen::memory()
+}
+
+/// Maximum light radius the engine will honour. Light canvases returned by
+/// `put`, `put_solid_color`, and `put_custom_color` are sized
+/// `(min(r, max_light_radius()) * 2 + 1)²`. JS callers must clamp `r` to this
+/// value (or read the actual canvas side length back) before constructing a
+/// typed-array view over the returned pointer, or they will run off the end
+/// of the canvas allocation.
+#[wasm_bindgen]
+pub fn max_light_radius() -> u16 {
+    lighting::max_dist() as u16
+}
+
 /// Initializes the lighting engine.
 ///
 /// This function must be called before any other lighting operations.
@@ -515,6 +534,10 @@ impl MapGrid {
 
     pub fn find(&mut self, i: usize) -> usize {
         self.uf.find(i)
+    }
+
+    pub fn get_tile(&self, idx: usize) -> i32 {
+        self.uf.get_tile(idx)
     }
 
     pub fn change_tile_type(&mut self, idx: usize, new_type: i32) -> Vec<usize> {
