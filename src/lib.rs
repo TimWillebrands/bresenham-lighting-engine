@@ -89,16 +89,13 @@ pub mod arctan;
 pub mod block_map;
 pub mod collision;
 pub mod constants;
+pub mod engine;
 pub mod lighting;
 pub mod map_grid;
 pub mod ray;
+pub mod scenarios;
 
-/// Legacy function pointer type for obstacle detection (deprecated)
-/// 
-/// This type is kept for backwards compatibility but is no longer used.
-/// The new collision detection system uses the `collision` module instead.
-#[deprecated(note = "Use collision::is_blocked instead")]
-pub type IsBlockedFn = fn(i16, i16, i16, i16) -> bool;
+pub use engine::LightingEngine;
 
 /// External JavaScript function for logging debug information.
 ///
@@ -110,15 +107,6 @@ extern "C" {
     fn log_from_js(s: &str);
 }
 
-/// Legacy function to reset the obstacle detection function (deprecated)
-///
-/// This function is kept for backwards compatibility but does nothing.
-/// Use the new collision detection system instead.
-#[deprecated(note = "Use collision::set_collision_mode instead")]
-pub fn reset_is_blocked_fn() {
-    // No-op: the new collision system doesn't use function pointers
-}
-
 /// Export a logging function for JavaScript use.
 ///
 /// This provides a way for JavaScript to log messages through the Rust
@@ -126,6 +114,25 @@ pub fn reset_is_blocked_fn() {
 #[wasm_bindgen]
 pub fn log(message: &str) {
     log_from_js(message);
+}
+
+/// Returns the WebAssembly.Memory object backing this module so JS callers
+/// can construct typed-array views over pointers returned by other exports
+/// (e.g. the canvas pointer from `put`).
+#[wasm_bindgen]
+pub fn wasm_memory() -> JsValue {
+    wasm_bindgen::memory()
+}
+
+/// Maximum light radius the engine will honour. Light canvases returned by
+/// `put`, `put_solid_color`, and `put_custom_color` are sized
+/// `(min(r, max_light_radius()) * 2 + 1)²`. JS callers must clamp `r` to this
+/// value (or read the actual canvas side length back) before constructing a
+/// typed-array view over the returned pointer, or they will run off the end
+/// of the canvas allocation.
+#[wasm_bindgen]
+pub fn max_light_radius() -> u16 {
+    lighting::max_dist() as u16
 }
 
 /// Initializes the lighting engine.
@@ -527,6 +534,10 @@ impl MapGrid {
 
     pub fn find(&mut self, i: usize) -> usize {
         self.uf.find(i)
+    }
+
+    pub fn get_tile(&self, idx: usize) -> i32 {
+        self.uf.get_tile(idx)
     }
 
     pub fn change_tile_type(&mut self, idx: usize, new_type: i32) -> Vec<usize> {

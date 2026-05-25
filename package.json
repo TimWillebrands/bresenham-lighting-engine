@@ -4,7 +4,8 @@
   "description": "When your GPU is too mainstream and you want to do lighting the hard way™️",
   "main": "index.js",
   "scripts": {
-    "build:wasm": "wasm-pack build --target web --out-dir examples/web-demo/pkg"
+    "build:wasm": "wasm-pack build --target bundler --out-dir pkg",
+    "build:example": "wasm-pack build --target web --out-dir examples/web-demo/pkg"
   },
   "keywords": [
     "bresenham",
