@@ -30,6 +30,7 @@ use once_cell::sync::Lazy;
 use crate::block_map::{compute_cell_details_for_tile, CellDetails};
 use crate::collision::HybridCollisionMap;
 use crate::lighting::{build_ray_table, Color, ColorMode, Light, RayTable};
+use crate::map_grid::UnionFind;
 
 /// Default cell-grid subdivision per tile, used by [`LightingEngine::default`]
 /// and the WASM back-compat [`DEFAULT_ENGINE`].
@@ -52,10 +53,13 @@ pub struct LightingEngine {
     cells: Vec<CellDetails>,
     collision: HybridCollisionMap,
     lights: HashMap<u8, Light>,
-    /// Door edges recorded via [`LightingEngine::set_door_edge`]. Each entry is
-    /// a canonical `(lo, hi)` pair of tile indices. Currently inert — placeholder
-    /// for issue #67 follow-up PR that wires doors into the room graph.
+    /// Open door edges as canonical `(lo, hi)` tile-index pairs. An entry's
+    /// presence = door open (tiles joined for lighting and pathfinding);
+    /// absence = closed (room boundary stands). See ADR-0003.
     door_edges: HashSet<(usize, usize)>,
+    /// Tile-resolution room graph, kept in sync with `tiles` + `door_edges`.
+    /// Pathfinding (`path`, `cast_ray`, `neighbours`) reads this.
+    tile_uf: UnionFind,
 }
 
 impl Default for LightingEngine {
@@ -83,6 +87,7 @@ impl LightingEngine {
         let collision = HybridCollisionMap::new(map_data, cells_per_row);
         let max_dist = crate::lighting::max_dist();
         let all_rays = build_ray_table(max_dist);
+        let tile_uf = UnionFind::new(vec![0i32; tiles_total], tiles_per_row);
         Self {
             cells_per_tile,
             tiles_per_row,
@@ -93,6 +98,7 @@ impl LightingEngine {
             collision,
             lights: HashMap::new(),
             door_edges: HashSet::new(),
+            tile_uf,
         }
     }
 
@@ -147,6 +153,7 @@ impl LightingEngine {
         self.tiles[index] = tile;
         self.recompute_block_map();
         self.refresh_collision_from_tiles();
+        self.refresh_tile_uf_from_tiles();
     }
 
     /// Overwrite the entire tile map. Length must match `tiles_per_row²`;
@@ -158,6 +165,7 @@ impl LightingEngine {
         self.tiles = tiles;
         self.recompute_block_map();
         self.refresh_collision_from_tiles();
+        self.refresh_tile_uf_from_tiles();
     }
 
     /// Replace the room map data of the broad-phase collision detector.
@@ -180,25 +188,38 @@ impl LightingEngine {
         self.collision.pixel_map_mut().set_pixel_batch(pixels);
     }
 
-    /// Record (or remove) a door edge between two tiles.
+    /// Record (or remove) a door edge between two tiles. Per ADR-0003, doors
+    /// are room-graph edges: open = the two tiles are joined for both
+    /// pathfinding and lighting; closed = the room boundary stands.
     ///
-    /// **Placeholder per issue #67.** The call is currently inert with respect
-    /// to lighting and pathfinding — only the canonical `(min, max)` tile-index
-    /// pair is stored in [`door_edges`](Self::door_edges) so the follow-up PR
-    /// (doors as first-class room-graph edges) can wire the read side. Calling
-    /// it today does *not* affect rendered light, ray occlusion, or room
-    /// connectivity.
-    ///
-    /// `open=true` records the edge; `open=false` removes it. Out-of-range
-    /// tile indices are recorded as-is — validation is the caller's problem
-    /// until the wiring lands.
+    /// `open=true` records the edge and unions the cells across the shared
+    /// tile boundary in the cell-resolution room graph; `open=false` removes
+    /// it and rebuilds the room graph from tiles. Out-of-range tile indices
+    /// are stored as-is and ignored when applied.
     pub fn set_door_edge(&mut self, t1_idx: usize, t2_idx: usize, open: bool) {
         let pair = canonical_edge(t1_idx, t2_idx);
         if open {
-            self.door_edges.insert(pair);
-        } else {
-            self.door_edges.remove(&pair);
+            if !self.door_edges.insert(pair) {
+                return;
+            }
+        } else if !self.door_edges.remove(&pair) {
+            return;
         }
+        self.refresh_collision_from_tiles();
+        self.refresh_tile_uf_from_tiles();
+    }
+
+    /// Forget every recorded door edge and rebuild the room graphs from the
+    /// raw tile map. Useful when the caller wants to re-publish the full set
+    /// of doors from scratch (e.g. JS observes the door tokens of a layer
+    /// and re-emits the edges).
+    pub fn clear_door_edges(&mut self) {
+        if self.door_edges.is_empty() {
+            return;
+        }
+        self.door_edges.clear();
+        self.refresh_collision_from_tiles();
+        self.refresh_tile_uf_from_tiles();
     }
 
     /// All currently-open door edges as canonical `(lo, hi)` tile-index pairs.
@@ -346,6 +367,244 @@ impl LightingEngine {
             }
         }
         self.collision.update_map_data(cell_map, cells_per_row);
+        self.publish_door_cell_edges();
+    }
+
+    /// Rebuild the tile-resolution room graph from the current tile map.
+    /// Doors are *not* unioned into the UF — a UF union closes transitively
+    /// and would dissolve the entire room boundary the moment one door
+    /// opened. Door connectivity is consulted edge-by-edge in `neighbours`
+    /// / `cast_ray` instead.
+    fn refresh_tile_uf_from_tiles(&mut self) {
+        let tiles: Vec<i32> = self.tiles.iter().map(|&t| t as i32).collect();
+        self.tile_uf = UnionFind::new(tiles, self.tiles_per_row);
+    }
+
+    /// Compute the cell-edge overlay corresponding to today's open door
+    /// tile-edges and hand it to the collision detector. Each open door (a
+    /// pair of adjacent tiles) becomes `cells_per_tile` cell-pair entries
+    /// along the shared tile boundary; the broad-phase walk consults the
+    /// overlay only when it would otherwise reject a step.
+    fn publish_door_cell_edges(&mut self) {
+        let cells_per_tile = self.cells_per_tile;
+        let tiles_per_row = self.tiles_per_row;
+        let cells_per_row = cells_per_tile * tiles_per_row;
+        let mut edges: HashSet<(usize, usize)> = HashSet::new();
+        for &(a, b) in &self.door_edges {
+            let (a_x, a_y) = (a % tiles_per_row, a / tiles_per_row);
+            let (b_x, b_y) = (b % tiles_per_row, b / tiles_per_row);
+            if a_y == b_y && a_x.abs_diff(b_x) == 1 {
+                let left_tx = a_x.min(b_x);
+                let cy0 = a_y * cells_per_tile;
+                let cx_left = left_tx * cells_per_tile + cells_per_tile - 1;
+                let cx_right = cx_left + 1;
+                for dy in 0..cells_per_tile {
+                    let li = (cy0 + dy) * cells_per_row + cx_left;
+                    let ri = (cy0 + dy) * cells_per_row + cx_right;
+                    edges.insert(canonical_edge(li, ri));
+                }
+            } else if a_x == b_x && a_y.abs_diff(b_y) == 1 {
+                let top_ty = a_y.min(b_y);
+                let cx0 = a_x * cells_per_tile;
+                let cy_top = top_ty * cells_per_tile + cells_per_tile - 1;
+                let cy_bot = cy_top + 1;
+                for dx in 0..cells_per_tile {
+                    let ti = cy_top * cells_per_row + cx0 + dx;
+                    let bi = cy_bot * cells_per_row + cx0 + dx;
+                    edges.insert(canonical_edge(ti, bi));
+                }
+            }
+        }
+        self.collision.set_door_cell_edges(edges);
+    }
+
+    fn has_open_door_between(&self, a: usize, b: usize) -> bool {
+        self.door_edges.contains(&canonical_edge(a, b))
+    }
+
+    /// Tile-coord BFS pathfinder. Returns the chain of tile indices from
+    /// `(x1,y1)` to `(x2,y2)` inclusive, or empty if no route exists or
+    /// either endpoint is a wall tile. Walks `neighbours()` so it respects
+    /// the room graph (and door overlays that join rooms across boundaries).
+    pub fn path(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> Vec<usize> {
+        let tpr = self.tiles_per_row;
+        let total = tpr * tpr;
+        if x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0 {
+            return Vec::new();
+        }
+        let start = (x1 as usize) + (y1 as usize) * tpr;
+        let goal = (x2 as usize) + (y2 as usize) * tpr;
+        if start >= total || goal >= total {
+            return Vec::new();
+        }
+        if self.tile_at(start) <= 0 || self.tile_at(goal) <= 0 {
+            return Vec::new();
+        }
+
+        let mut came_from: HashMap<usize, Option<usize>> = HashMap::new();
+        let mut frontier: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+        frontier.push_back(start);
+        came_from.insert(start, None);
+        let mut found = start == goal;
+
+        while let Some(current) = frontier.pop_front() {
+            if current == goal {
+                found = true;
+                break;
+            }
+            for next in self.neighbours(current, false) {
+                if !came_from.contains_key(&next) && self.tile_at(next) > 0 {
+                    came_from.insert(next, Some(current));
+                    frontier.push_back(next);
+                }
+            }
+        }
+
+        if !found {
+            return Vec::new();
+        }
+
+        let mut points = Vec::new();
+        let mut current = goal;
+        while current != start {
+            points.push(current);
+            match came_from.get(&current) {
+                Some(Some(prev)) => current = *prev,
+                _ => return Vec::new(),
+            }
+        }
+        points.push(start);
+        points.reverse();
+        points
+    }
+
+    /// Tile-coord line-of-sight check. `true` if every step of the
+    /// Bresenham walk stays inside the same room, or — when crossing a
+    /// room boundary — that boundary has an open door registered between
+    /// the two tiles being stepped across. Door overlays are checked
+    /// per-step, never via union-find merges, so opening one door does
+    /// not silently dissolve the rest of the wall.
+    pub fn cast_ray(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+        let tpr = self.tiles_per_row as i32;
+        let in_bounds = |x: i32, y: i32| x >= 0 && y >= 0 && x < tpr && y < tpr;
+        if !in_bounds(x1, y1) || !in_bounds(x2, y2) {
+            return true;
+        }
+        let dx = x2 - x1;
+        let dy = y2 - y1;
+        let nx = dx.abs();
+        let ny = dy.abs();
+        let sx = if dx > 0 { 1 } else { -1 };
+        let sy = if dy > 0 { 1 } else { -1 };
+        let mut px = x1;
+        let mut py = y1;
+        let mut ix = 0;
+        let mut iy = 0;
+        let mut current_idx = (py * tpr + px) as usize;
+        let mut current_room = self.tile_uf.find(current_idx);
+
+        while ix < nx || iy < ny {
+            let prev_idx = current_idx;
+            if (ix as f32 + 0.5) / (nx as f32) < (iy as f32 + 0.5) / (ny as f32) {
+                px += sx;
+                ix += 1;
+            } else {
+                py += sy;
+                iy += 1;
+            }
+            if !in_bounds(px, py) {
+                return true;
+            }
+            let next_idx = (py * tpr + px) as usize;
+            let next_room = self.tile_uf.find(next_idx);
+            if next_room != current_room && !self.has_open_door_between(prev_idx, next_idx) {
+                return false;
+            }
+            current_idx = next_idx;
+            current_room = next_room;
+        }
+        true
+    }
+
+    /// Read-only access to the tile-resolution room id of `tile_idx`.
+    pub fn tile_find(&mut self, tile_idx: usize) -> usize {
+        self.tile_uf.find(tile_idx)
+    }
+
+    /// Tile type at `tile_idx` (or `-1` for out-of-range).
+    pub fn tile_at(&self, tile_idx: usize) -> i32 {
+        if tile_idx < self.tiles.len() {
+            self.tiles[tile_idx] as i32
+        } else {
+            -1
+        }
+    }
+
+    /// 4- or 8-connected tile neighbours of `tile_idx` reachable in one
+    /// step: either they share a room (same `tile_uf` root) or an open
+    /// door is registered between this exact tile-pair. Diagonals are
+    /// reachable only if at least one of the two cardinal steps that lead
+    /// to the diagonal is itself reachable (no cutting corners through
+    /// closed walls).
+    pub fn neighbours(&mut self, tile_idx: usize, include_diagonal: bool) -> Vec<usize> {
+        let tiles_per_row = self.tiles_per_row;
+        let total = tiles_per_row * tiles_per_row;
+        if tile_idx >= total {
+            return Vec::new();
+        }
+        let row = tile_idx / tiles_per_row;
+        let col = tile_idx % tiles_per_row;
+        let room = self.tile_uf.find(tile_idx);
+        let mut out = Vec::with_capacity(if include_diagonal { 8 } else { 4 });
+
+        let north = if row > 0 { Some(tile_idx - tiles_per_row) } else { None };
+        let south = if row + 1 < tiles_per_row { Some(tile_idx + tiles_per_row) } else { None };
+        let west = if col > 0 { Some(tile_idx - 1) } else { None };
+        let east = if col + 1 < tiles_per_row { Some(tile_idx + 1) } else { None };
+
+        let reachable = |ni: Option<usize>, uf: &mut UnionFind| -> Option<usize> {
+            let ni = ni?;
+            if uf.find(ni) == room || self.door_edges.contains(&canonical_edge(tile_idx, ni)) {
+                Some(ni)
+            } else {
+                None
+            }
+        };
+
+        let n_ok = reachable(north, &mut self.tile_uf);
+        let s_ok = reachable(south, &mut self.tile_uf);
+        let w_ok = reachable(west, &mut self.tile_uf);
+        let e_ok = reachable(east, &mut self.tile_uf);
+
+        if let Some(i) = n_ok { out.push(i); }
+        if let Some(i) = w_ok { out.push(i); }
+        if let Some(i) = s_ok { out.push(i); }
+        if let Some(i) = e_ok { out.push(i); }
+
+        if include_diagonal {
+            let diag = |dr: i32, dc: i32| -> Option<usize> {
+                let nr = row as i32 + dr;
+                let nc = col as i32 + dc;
+                if nr < 0 || nc < 0 || nr >= tiles_per_row as i32 || nc >= tiles_per_row as i32 {
+                    return None;
+                }
+                Some(nr as usize * tiles_per_row + nc as usize)
+            };
+            let push_diag = |out: &mut Vec<usize>, idx: Option<usize>, gate_a: bool, gate_b: bool| {
+                if !(gate_a || gate_b) {
+                    return;
+                }
+                if let Some(d) = idx {
+                    out.push(d);
+                }
+            };
+            push_diag(&mut out, diag(-1, -1), n_ok.is_some(), w_ok.is_some());
+            push_diag(&mut out, diag(-1, 1), n_ok.is_some(), e_ok.is_some());
+            push_diag(&mut out, diag(1, -1), s_ok.is_some(), w_ok.is_some());
+            push_diag(&mut out, diag(1, 1), s_ok.is_some(), e_ok.is_some());
+        }
+
+        out
     }
 }
 
@@ -485,6 +744,16 @@ mod tests {
     }
 
     #[test]
+    fn path_returns_indices_between_two_passable_tiles() {
+        let mut e = LightingEngine::new(2, 5);
+        e.set_tile_map(vec![1u8; 25]);
+        let p = e.path(0, 0, 4, 0);
+        assert!(!p.is_empty(), "expected non-empty path, got {:?}", p);
+        assert_eq!(p[0], 0, "path should start at start index");
+        assert_eq!(p[p.len() - 1], 4, "path should end at goal index");
+    }
+
+    #[test]
     fn set_door_edge_records_canonical_pair() {
         let mut e = LightingEngine::default();
         assert!(e.door_edges().is_empty());
@@ -502,27 +771,182 @@ mod tests {
     }
 
     #[test]
-    fn set_door_edge_does_not_affect_lighting_yet() {
-        // Placeholder semantics per issue #67: recording the door edge must
-        // not change the rendered canvas — the wiring lands in PR #2.
-        let mut e = LightingEngine::default();
-        e.update_or_add_light(1, 4, 10, 10);
-        let before: Vec<u8> = e
-            .light_canvas(1)
-            .unwrap()
-            .iter()
-            .map(|c| c.0.max(c.1).max(c.2))
-            .collect();
+    fn closed_door_keeps_rooms_split_for_pathfinding() {
+        let mut e = LightingEngine::new(2, 5);
+        // Two rooms separated by a column of type-2 tiles at x=2.
+        let mut tiles = vec![1u8; 25];
+        for y in 0..5 {
+            tiles[y * 5 + 2] = 2;
+        }
+        e.set_tile_map(tiles);
+        // No door — different tile types ⇒ different rooms ⇒ no path.
+        assert!(
+            e.path(0, 1, 4, 1).is_empty(),
+            "expected empty path across closed wall"
+        );
+    }
 
-        e.set_door_edge(0, 1, true);
-        // Re-render the light (door edge must not change the canvas).
-        e.update_or_add_light(1, 4, 10, 10);
-        let after: Vec<u8> = e
-            .light_canvas(1)
-            .unwrap()
-            .iter()
-            .map(|c| c.0.max(c.1).max(c.2))
-            .collect();
-        assert_eq!(before, after, "set_door_edge must be a no-op for lighting");
+    #[test]
+    fn open_door_joins_rooms_for_pathfinding() {
+        let mut e = LightingEngine::new(2, 5);
+        let mut tiles = vec![1u8; 25];
+        for y in 0..5 {
+            tiles[y * 5 + 2] = 2;
+        }
+        e.set_tile_map(tiles);
+        // Open the door across the wall column at row 1.
+        // Tile (1,1) and tile (3,1) are non-adjacent so the door is between
+        // (1,1) and (2,1) and another between (2,1) and (3,1). But a single
+        // door usually bridges directly between the two passable tiles, so
+        // model it as: door between (1,1) and (3,1)? That isn't adjacent.
+        // Use two doors that each step into the wall tile, then out.
+        let idx = |x: usize, y: usize| -> usize { y * 5 + x };
+        e.set_door_edge(idx(1, 1), idx(2, 1), true);
+        e.set_door_edge(idx(2, 1), idx(3, 1), true);
+        let p = e.path(0, 1, 4, 1);
+        assert!(!p.is_empty(), "expected non-empty path through open door");
+        assert_eq!(p[0], idx(0, 1));
+        assert_eq!(p[p.len() - 1], idx(4, 1));
+    }
+
+    #[test]
+    fn closed_door_blocks_light_into_adjacent_room() {
+        // Two rooms separated by a column of wall tiles. Light placed inside
+        // the west room must not leak into the east room when no door is open.
+        let mut e = LightingEngine::new(4, 8);
+        let tpr = e.tiles_per_row();
+        let cpt = e.cells_per_tile();
+        let mut tiles = vec![1u8; tpr * tpr];
+        for y in 0..tpr {
+            tiles[y * tpr + tpr / 2] = 0; // wall tiles
+        }
+        e.set_tile_map(tiles);
+
+        let light_tx = tpr / 2 - 1;
+        let light_ty = tpr / 2;
+        let light_cx = (light_tx * cpt + cpt / 2) as i16;
+        let light_cy = (light_ty * cpt + cpt / 2) as i16;
+        e.update_or_add_light(1, (cpt * 4) as i16, light_cx, light_cy);
+
+        // Sample a cell deep inside the east room — must be dark.
+        let probe_cx = ((tpr / 2 + 1) * cpt + cpt / 2) as i16;
+        let probe_cy = light_cy;
+        let is_lit = !e.is_blocked(light_cx, light_cy, probe_cx, probe_cy);
+        assert!(!is_lit, "closed wall should block ray to east room");
+    }
+
+    #[test]
+    fn open_door_lets_light_cross_into_adjacent_room() {
+        let mut e = LightingEngine::new(4, 8);
+        let tpr = e.tiles_per_row();
+        let cpt = e.cells_per_tile();
+        let mut tiles = vec![1u8; tpr * tpr];
+        for y in 0..tpr {
+            tiles[y * tpr + tpr / 2] = 0;
+        }
+        e.set_tile_map(tiles);
+
+        let light_ty = tpr / 2;
+        let light_tx = tpr / 2 - 1;
+        let wall_tx = tpr / 2;
+        let east_tx = tpr / 2 + 1;
+        e.set_door_edge(
+            light_ty * tpr + light_tx,
+            light_ty * tpr + wall_tx,
+            true,
+        );
+        e.set_door_edge(
+            light_ty * tpr + wall_tx,
+            light_ty * tpr + east_tx,
+            true,
+        );
+
+        let light_cx = (light_tx * cpt + cpt / 2) as i16;
+        let light_cy = (light_ty * cpt + cpt / 2) as i16;
+        // Probe a cell one cell east of the door's east boundary so it sits
+        // squarely inside the east room.
+        let probe_cx = (east_tx * cpt + cpt / 2) as i16;
+        let probe_cy = light_cy;
+        assert!(
+            !e.is_blocked(light_cx, light_cy, probe_cx, probe_cy),
+            "open door should join rooms — ray must not be blocked"
+        );
+    }
+
+    #[test]
+    fn open_door_does_not_dissolve_rest_of_wall_for_lighting() {
+        // Two rooms of different tile types share a horizontal boundary. A
+        // single door opens between (3,3) and (3,4). Rays crossing the
+        // boundary elsewhere (e.g. through (1,3)→(1,4)) must remain blocked.
+        let mut e = LightingEngine::new(4, 8);
+        let tpr = e.tiles_per_row();
+        let cpt = e.cells_per_tile();
+        let mut tiles = vec![0u8; tpr * tpr];
+        for y in 0..tpr {
+            for x in 0..tpr {
+                tiles[y * tpr + x] = if y < 4 { 1 } else { 2 };
+            }
+        }
+        e.set_tile_map(tiles);
+        // Door joins exactly tile (3,3) and (3,4).
+        e.set_door_edge(3 * tpr + 3, 4 * tpr + 3, true);
+
+        // Probe across the boundary at a column far from the door (col 1).
+        // Cell coords: x=1*cpt+cpt/2, y just above and just below the boundary.
+        let cx = (1 * cpt + cpt / 2) as i16;
+        let cy_upper = (3 * cpt + cpt / 2) as i16;
+        let cy_lower = (4 * cpt + cpt / 2) as i16;
+        assert!(
+            e.is_blocked(cx, cy_upper, cx, cy_lower),
+            "ray crossing the boundary far from the door must stay blocked"
+        );
+    }
+
+    #[test]
+    fn open_door_does_not_dissolve_rest_of_wall_for_pathfinding() {
+        // Same shape as the lighting test: one door at column 3 must not let
+        // pathfinding cross the boundary at column 1.
+        let mut e = LightingEngine::new(2, 8);
+        let tpr = e.tiles_per_row();
+        let mut tiles = vec![0u8; tpr * tpr];
+        for y in 0..tpr {
+            for x in 0..tpr {
+                tiles[y * tpr + x] = if y < 4 { 1 } else { 2 };
+            }
+        }
+        e.set_tile_map(tiles);
+        e.set_door_edge(3 * tpr + 3, 4 * tpr + 3, true);
+
+        // Path from (1, 3) to (1, 4) — different columns from the door —
+        // would have to detour through (3, 3)→(3, 4) (the door) and back.
+        // We don't assert path length, only that the path stays *off* the
+        // boundary at non-door columns. Easier: assert that the boundary at
+        // col 1 is NOT itself traversable as a direct step.
+        let row3_col1 = 3 * tpr + 1;
+        let row4_col1 = 4 * tpr + 1;
+        assert!(
+            !e.neighbours(row3_col1, false).contains(&row4_col1),
+            "non-door boundary must not be a neighbour"
+        );
+    }
+
+    #[test]
+    fn clear_door_edges_restores_room_boundary() {
+        let mut e = LightingEngine::new(2, 5);
+        let mut tiles = vec![1u8; 25];
+        for y in 0..5 {
+            tiles[y * 5 + 2] = 2;
+        }
+        e.set_tile_map(tiles);
+        let idx = |x: usize, y: usize| -> usize { y * 5 + x };
+        e.set_door_edge(idx(1, 1), idx(2, 1), true);
+        e.set_door_edge(idx(2, 1), idx(3, 1), true);
+        assert!(!e.path(0, 1, 4, 1).is_empty());
+        e.clear_door_edges();
+        assert!(
+            e.path(0, 1, 4, 1).is_empty(),
+            "clearing doors must re-split the rooms"
+        );
+        assert!(e.door_edges().is_empty());
     }
 }

@@ -12,6 +12,7 @@
 //! [`crate::engine::DEFAULT_ENGINE`]; new Rust callers should construct a
 //! [`crate::engine::LightingEngine`] and call methods on it.
 
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use crate::engine::DEFAULT_ENGINE;
@@ -150,6 +151,12 @@ pub struct HybridCollisionMap {
     union_find: Arc<RwLock<UnionFind>>,
     pixel_map: PixelCollisionMap,
     map_size: usize,
+    /// Canonical `(lo, hi)` cell-index pairs where the broad-phase walk is
+    /// allowed to step between two cells that the union-find considers to be
+    /// in different rooms. Populated by the engine from its `door_edges`
+    /// overlay — a door dissolves the wall only along its own cell-edges, not
+    /// across the entire room boundary (which is what a UF union would do).
+    door_cell_edges: HashSet<(usize, usize)>,
 }
 
 impl HybridCollisionMap {
@@ -159,6 +166,7 @@ impl HybridCollisionMap {
             union_find: Arc::new(RwLock::new(uf)),
             pixel_map: PixelCollisionMap::new(map_size as u16, map_size as u16),
             map_size,
+            door_cell_edges: HashSet::new(),
         }
     }
 
@@ -166,10 +174,18 @@ impl HybridCollisionMap {
         if let Ok(mut uf) = self.union_find.write() {
             *uf = UnionFind::new(map_data, map_size);
         }
+        self.map_size = map_size;
     }
 
     pub fn pixel_map_mut(&mut self) -> &mut PixelCollisionMap {
         &mut self.pixel_map
+    }
+
+    /// Replace the set of open door cell-edges. Each entry is a canonical
+    /// `(lo, hi)` cell-index pair flagging "the broad-phase walk may step
+    /// across these two cells even though they are in different rooms".
+    pub fn set_door_cell_edges(&mut self, edges: HashSet<(usize, usize)>) {
+        self.door_cell_edges = edges;
     }
 
     pub fn pixel_map(&self) -> &PixelCollisionMap {
@@ -179,9 +195,53 @@ impl HybridCollisionMap {
 
 impl CollisionDetector for HybridCollisionMap {
     fn is_blocked(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
-        if let Ok(mut uf) = self.union_find.write() {
-            if !uf.cast_ray(x0 as i32, y0 as i32, x1 as i32, y1 as i32) {
-                return true;
+        let size = self.map_size as i32;
+        let in_bounds = |x: i32, y: i32| x >= 0 && y >= 0 && x < size && y < size;
+        let (x0i, y0i, x1i, y1i) = (x0 as i32, y0 as i32, x1 as i32, y1 as i32);
+
+        if in_bounds(x0i, y0i) && in_bounds(x1i, y1i) {
+            if let Ok(mut uf) = self.union_find.write() {
+                let dx = x1i - x0i;
+                let dy = y1i - y0i;
+                let nx = dx.abs();
+                let ny = dy.abs();
+                let sx = if dx > 0 { 1 } else { -1 };
+                let sy = if dy > 0 { 1 } else { -1 };
+
+                let mut px = x0i;
+                let mut py = y0i;
+                let mut ix = 0;
+                let mut iy = 0;
+                let mut current_idx = (py * size + px) as usize;
+                let mut current_room = uf.find(current_idx);
+
+                while ix < nx || iy < ny {
+                    let prev_idx = current_idx;
+                    if (ix as f32 + 0.5) / (nx as f32) < (iy as f32 + 0.5) / (ny as f32) {
+                        px += sx;
+                        ix += 1;
+                    } else {
+                        py += sy;
+                        iy += 1;
+                    }
+                    if !in_bounds(px, py) {
+                        return true;
+                    }
+                    let next_idx = (py * size + px) as usize;
+                    let next_room = uf.find(next_idx);
+                    if next_room != current_room {
+                        let pair = if prev_idx <= next_idx {
+                            (prev_idx, next_idx)
+                        } else {
+                            (next_idx, prev_idx)
+                        };
+                        if !self.door_cell_edges.contains(&pair) {
+                            return true;
+                        }
+                    }
+                    current_idx = next_idx;
+                    current_room = next_room;
+                }
             }
         }
         self.pixel_map.is_blocked(x0, y0, x1, y1)
@@ -192,6 +252,7 @@ impl CollisionDetector for HybridCollisionMap {
             *uf = UnionFind::new(vec![0; self.map_size * self.map_size], self.map_size);
         }
         self.pixel_map.clear();
+        self.door_cell_edges.clear();
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

@@ -82,7 +82,6 @@
 //! scaling roughly linearly with the number of active lights.
 
 use wasm_bindgen::prelude::*;
-use web_sys::js_sys;
 
 // Re-export public modules for library use
 pub mod arctan;
@@ -486,74 +485,6 @@ pub use collision::{init as init_collision};
 pub use engine::{DEFAULT_CELLS_PER_TILE, DEFAULT_TILES_PER_ROW};
 pub use lighting::{init as init_lighting, Color};
 
-#[wasm_bindgen]
-pub struct MapGrid {
-    uf: map_grid::UnionFind,
-}
-
-#[wasm_bindgen]
-impl MapGrid {
-    #[wasm_bindgen(constructor)]
-    pub fn new(map: Vec<i32>, layer_size: usize) -> Self {
-        MapGrid {
-            uf: map_grid::UnionFind::new(map, layer_size),
-        }
-    }
-
-    pub fn get_rooms(&mut self) -> js_sys::Object {
-        let rooms = self.uf.rooms();
-        let js_rooms = js_sys::Object::new();
-
-        for (root, room) in rooms.iter() {
-            let js_room = js_sys::Object::new();
-            let js_points = js_sys::Int32Array::new_with_length(room.points.len() as u32 * 2);
-            for (i, p) in room.points.iter().enumerate() {
-                js_points.set_index(i as u32 * 2, p.x);
-                js_points.set_index(i as u32 * 2 + 1, p.y);
-            }
-            js_sys::Reflect::set(&js_room, &"points".into(), &js_points).unwrap();
-
-            let js_edge_loops = js_sys::Array::new();
-            for edge_loop in room.edge_loops.iter() {
-                let js_edge_loop = js_sys::Int32Array::new_with_length(edge_loop.len() as u32 * 4);
-                for (i, edge) in edge_loop.iter().enumerate() {
-                    js_edge_loop.set_index(i as u32 * 4, edge.0.x);
-                    js_edge_loop.set_index(i as u32 * 4 + 1, edge.0.y);
-                    js_edge_loop.set_index(i as u32 * 4 + 2, edge.1.x);
-                    js_edge_loop.set_index(i as u32 * 4 + 3, edge.1.y);
-                }
-                js_edge_loops.push(&js_edge_loop);
-            }
-            js_sys::Reflect::set(&js_room, &"edgeLoops".into(), &js_edge_loops).unwrap();
-
-            js_sys::Reflect::set(&js_rooms, &root.to_string().into(), &js_room).unwrap();
-        }
-
-        js_rooms
-    }
-
-    pub fn find(&mut self, i: usize) -> usize {
-        self.uf.find(i)
-    }
-
-    pub fn get_tile(&self, idx: usize) -> i32 {
-        self.uf.get_tile(idx)
-    }
-
-    pub fn change_tile_type(&mut self, idx: usize, new_type: i32) -> Vec<usize> {
-        let (old_root, new_root) = self.uf.change_tile_type(idx, new_type);
-        vec![old_root, new_root]
-    }
-
-    pub fn cast_ray(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
-        self.uf.cast_ray(x1, y1, x2, y2)
-    }
-
-    pub fn path(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> Vec<usize> {
-        self.uf.path(x1, y1, x2, y2)
-    }
-}
-
 /// WASM/JS-facing wrapper around [`engine::LightingEngine`]. One instance per
 /// `Layer` (see [ADR-0002](../../docs/adr/0002-lighting-engine-per-layer.md));
 /// JS owns the handle and forwards tile/light mutations through it.
@@ -613,10 +544,44 @@ impl WasmLightingEngine {
         self.inner.clear_pixel_collisions();
     }
 
-    /// Record (or remove) a door edge between two tiles. Inert in PR1 —
-    /// recorded only so the follow-up PR can wire the read side.
+    /// Record (or remove) a door edge between two tiles. Open doors join
+    /// the two tiles' rooms for both pathfinding and lighting (per ADR-0003).
     pub fn set_door_edge(&mut self, t1_idx: usize, t2_idx: usize, open: bool) {
         self.inner.set_door_edge(t1_idx, t2_idx, open);
+    }
+
+    /// Forget every recorded door edge. JS re-emits the door set from
+    /// scratch when the Yjs token list changes.
+    pub fn clear_door_edges(&mut self) {
+        self.inner.clear_door_edges();
+    }
+
+    /// Tile-coord BFS pathfinder. Returns the chain of tile indices from
+    /// `(x1,y1)` to `(x2,y2)`, or an empty `Vec` if no route exists.
+    pub fn path(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> Vec<usize> {
+        self.inner.path(x1, y1, x2, y2)
+    }
+
+    /// Tile-coord line-of-sight check.
+    pub fn cast_ray(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+        self.inner.cast_ray(x1, y1, x2, y2)
+    }
+
+    /// 4- or 8-connected room-graph neighbours of `tile_idx`. Returned as a
+    /// flat `Uint32Array`-compatible vector for the JS facade.
+    pub fn neighbours(&mut self, tile_idx: usize, include_diagonal: bool) -> Vec<usize> {
+        self.inner.neighbours(tile_idx, include_diagonal)
+    }
+
+    /// Tile type at `tile_idx` (or `-1` for out-of-range).
+    pub fn tile_at(&self, tile_idx: usize) -> i32 {
+        self.inner.tile_at(tile_idx)
+    }
+
+    /// Tile-resolution room id of `tile_idx`. Two tiles share a room iff
+    /// `tile_find(a) == tile_find(b)`.
+    pub fn tile_find(&mut self, tile_idx: usize) -> usize {
+        self.inner.tile_find(tile_idx)
     }
 
     /// Create or update a rainbow light. Returns a pointer to the rendered
