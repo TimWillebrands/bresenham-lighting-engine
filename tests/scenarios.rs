@@ -31,7 +31,7 @@ fn brightness(pixel: Color) -> u8 {
 fn build(name: &str) -> (LightingEngine, u8) {
     let scenario = scenarios::find(name)
         .unwrap_or_else(|| panic!("unknown scenario {:?} — fix the test", name));
-    let mut engine = LightingEngine::new();
+    let mut engine = LightingEngine::default();
     let id = (scenario.build)(&mut engine);
     (engine, id)
 }
@@ -140,6 +140,21 @@ fn object_wall_dims_canvas_edge() {
             matrix(&engine, id)
         );
     }
+}
+
+#[test]
+fn tile_wall_blocks_light_from_crossing_into_adjacent_room() {
+    // Regression test for issue #67: walls authored as tiles via the engine's
+    // tile-map API must occlude light. Reproduces the multi-room screenshot.
+    let (engine, id) = build("tile_wall_shadow");
+    let east = half_brightness(&engine, id, Half::East);
+    let west = half_brightness(&engine, id, Half::West);
+    assert!(
+        east < 30,
+        "light placed in west room must not leak east of the wall: \
+         east_avg={east} (want <30), west_avg={west}. Canvas:\n{}",
+        matrix(&engine, id)
+    );
 }
 
 #[test]

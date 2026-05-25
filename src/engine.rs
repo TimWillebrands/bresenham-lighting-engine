@@ -22,48 +22,94 @@
 //! should construct their own instance with [`LightingEngine::new`] and call
 //! methods on it directly — that's what makes parallel test execution safe.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
 use once_cell::sync::Lazy;
 
 use crate::block_map::{compute_cell_details_for_tile, CellDetails};
 use crate::collision::HybridCollisionMap;
-use crate::constants::{CELLS_PER_ROW, CELLS_TOTAL, TILES_PER_ROW, TILES_TOTAL};
-use crate::lighting::{Color, ColorMode, Light};
+use crate::lighting::{build_ray_table, Color, ColorMode, Light, RayTable};
+
+/// Default cell-grid subdivision per tile, used by [`LightingEngine::default`]
+/// and the WASM back-compat [`DEFAULT_ENGINE`].
+pub const DEFAULT_CELLS_PER_TILE: usize = 6;
+
+/// Default tile-grid side length, used by [`LightingEngine::default`] and the
+/// WASM back-compat [`DEFAULT_ENGINE`].
+pub const DEFAULT_TILES_PER_ROW: usize = 30;
 
 /// Owned instance of the lighting engine's mutable runtime state.
 ///
 /// Construct one per scenario. Multiple instances coexist freely — they share
 /// only immutable, process-wide ray geometry caches.
 pub struct LightingEngine {
+    cells_per_tile: usize,
+    tiles_per_row: usize,
+    max_dist: usize,
+    all_rays: RayTable,
     tiles: Vec<u8>,
     cells: Vec<CellDetails>,
     collision: HybridCollisionMap,
     lights: HashMap<u8, Light>,
+    /// Door edges recorded via [`LightingEngine::set_door_edge`]. Each entry is
+    /// a canonical `(lo, hi)` pair of tile indices. Currently inert — placeholder
+    /// for issue #67 follow-up PR that wires doors into the room graph.
+    door_edges: HashSet<(usize, usize)>,
 }
 
 impl Default for LightingEngine {
     fn default() -> Self {
-        Self::new()
+        Self::new(DEFAULT_CELLS_PER_TILE, DEFAULT_TILES_PER_ROW)
     }
 }
 
 impl LightingEngine {
-    /// Construct an engine with an empty tile map (all tiles type 0, one big
-    /// room, no objects, no lights).
-    pub fn new() -> Self {
-        let tiles = vec![0u8; TILES_TOTAL];
-        let cells = vec![CellDetails::default(); CELLS_TOTAL];
+    /// Construct an engine with empty tile map (all tiles type 0, one big
+    /// room, no objects, no lights) at the given resolution.
+    ///
+    /// `cells_per_tile` is the cell-grid subdivision per tile (collision /
+    /// lighting resolution); `tiles_per_row` is the world's tile-grid side.
+    pub fn new(cells_per_tile: usize, tiles_per_row: usize) -> Self {
+        assert!(cells_per_tile > 0, "cells_per_tile must be > 0");
+        assert!(tiles_per_row > 0, "tiles_per_row must be > 0");
+        let tiles_total = tiles_per_row * tiles_per_row;
+        let cells_per_row = cells_per_tile * tiles_per_row;
+        let cells_total = cells_per_row * cells_per_row;
+        let tiles = vec![0u8; tiles_total];
+        let cells = vec![CellDetails::default(); cells_total];
         // Default: one big room covering all cells, no walls, no objects.
-        let map_data = vec![1i32; CELLS_PER_ROW * CELLS_PER_ROW];
-        let collision = HybridCollisionMap::new(map_data, CELLS_PER_ROW);
+        let map_data = vec![1i32; cells_per_row * cells_per_row];
+        let collision = HybridCollisionMap::new(map_data, cells_per_row);
+        let max_dist = crate::lighting::max_dist();
+        let all_rays = build_ray_table(max_dist);
         Self {
+            cells_per_tile,
+            tiles_per_row,
+            max_dist,
+            all_rays,
             tiles,
             cells,
             collision,
             lights: HashMap::new(),
+            door_edges: HashSet::new(),
         }
+    }
+
+    /// Cell-grid subdivision per tile (was the module-level `CELLS_PER_TILE`
+    /// constant; now per-instance per ADR-0008).
+    pub fn cells_per_tile(&self) -> usize {
+        self.cells_per_tile
+    }
+
+    /// World's tile-grid side length (was the module-level `TILES_PER_ROW`).
+    pub fn tiles_per_row(&self) -> usize {
+        self.tiles_per_row
+    }
+
+    /// Cell-grid side length (`cells_per_tile * tiles_per_row`).
+    pub fn cells_per_row(&self) -> usize {
+        self.cells_per_tile * self.tiles_per_row
     }
 
     /// Read-only view of the tile-type array (row-major, `TILES_TOTAL` long).
@@ -93,8 +139,9 @@ impl LightingEngine {
     /// Recomputes the affected cell edge flags and refreshes the room
     /// union-find from the new tile map.
     pub fn set_tile(&mut self, x: u32, y: u32, tile: u8) {
-        let index = (x as usize) + (y as usize * TILES_PER_ROW);
-        if index >= TILES_TOTAL {
+        let tiles_per_row = self.tiles_per_row;
+        let index = (x as usize) + (y as usize * tiles_per_row);
+        if index >= self.tiles.len() {
             return;
         }
         self.tiles[index] = tile;
@@ -102,10 +149,10 @@ impl LightingEngine {
         self.refresh_collision_from_tiles();
     }
 
-    /// Overwrite the entire tile map. Length must be `TILES_TOTAL`; otherwise
-    /// the call is a no-op.
+    /// Overwrite the entire tile map. Length must match `tiles_per_row²`;
+    /// otherwise the call is a no-op.
     pub fn set_tile_map(&mut self, tiles: Vec<u8>) {
-        if tiles.len() != TILES_TOTAL {
+        if tiles.len() != self.tiles.len() {
             return;
         }
         self.tiles = tiles;
@@ -131,6 +178,38 @@ impl LightingEngine {
         I: IntoIterator<Item = (u16, u16, bool)>,
     {
         self.collision.pixel_map_mut().set_pixel_batch(pixels);
+    }
+
+    /// Record (or remove) a door edge between two tiles.
+    ///
+    /// **Placeholder per issue #67.** The call is currently inert with respect
+    /// to lighting and pathfinding — only the canonical `(min, max)` tile-index
+    /// pair is stored in [`door_edges`](Self::door_edges) so the follow-up PR
+    /// (doors as first-class room-graph edges) can wire the read side. Calling
+    /// it today does *not* affect rendered light, ray occlusion, or room
+    /// connectivity.
+    ///
+    /// `open=true` records the edge; `open=false` removes it. Out-of-range
+    /// tile indices are recorded as-is — validation is the caller's problem
+    /// until the wiring lands.
+    pub fn set_door_edge(&mut self, t1_idx: usize, t2_idx: usize, open: bool) {
+        let pair = canonical_edge(t1_idx, t2_idx);
+        if open {
+            self.door_edges.insert(pair);
+        } else {
+            self.door_edges.remove(&pair);
+        }
+    }
+
+    /// All currently-open door edges as canonical `(lo, hi)` tile-index pairs.
+    pub fn door_edges(&self) -> &HashSet<(usize, usize)> {
+        &self.door_edges
+    }
+
+    /// Whether a door edge between `t1_idx` and `t2_idx` is currently recorded.
+    /// Order-insensitive.
+    pub fn has_door_edge(&self, t1_idx: usize, t2_idx: usize) -> bool {
+        self.door_edges.contains(&canonical_edge(t1_idx, t2_idx))
     }
 
     /// Clear all object cells (does not touch the tile map).
@@ -205,7 +284,7 @@ impl LightingEngine {
         y: i16,
         color_mode: Option<ColorMode>,
     ) -> *const Color {
-        let clamped_r = r.min(crate::lighting::max_dist() as i16).max(1);
+        let clamped_r = r.min(self.max_dist as i16).max(1);
 
         let needs_new = match self.lights.get(&id) {
             Some(existing) => existing.radius() != clamped_r || existing.color_mode() != &color_mode,
@@ -216,27 +295,67 @@ impl LightingEngine {
                 .insert(id, Light::new((x, y), clamped_r, color_mode.clone()));
         }
 
-        // Disjoint borrows: `lights` mutably, `collision` immutably.
+        // Disjoint borrows: `lights` mutably, `collision`+`all_rays` immutably.
         let collision = &self.collision;
+        let all_rays = &self.all_rays;
+        let max_dist = self.max_dist;
         let light = self
             .lights
             .get_mut(&id)
             .expect("just inserted or known to exist");
         light.set_state((x, y), clamped_r, color_mode);
-        light.update(collision)
+        light.update(collision, all_rays, max_dist)
     }
 
     fn recompute_block_map(&mut self) {
-        for tile_index in 0..TILES_TOTAL {
-            compute_cell_details_for_tile(tile_index, &self.tiles, &mut self.cells);
+        let tiles_total = self.tiles.len();
+        for tile_index in 0..tiles_total {
+            compute_cell_details_for_tile(
+                tile_index,
+                &self.tiles,
+                &mut self.cells,
+                self.cells_per_tile,
+                self.tiles_per_row,
+            );
         }
     }
 
     fn refresh_collision_from_tiles(&mut self) {
-        // Preserve historical behaviour: collision map is updated with the
-        // tile-resolution layout (`TILES_PER_ROW`), not the cell resolution.
-        let map_data: Vec<i32> = self.tiles.iter().map(|&t| t as i32).collect();
-        self.collision.update_map_data(map_data, TILES_PER_ROW);
+        // The broad-phase room graph is queried in **cell coordinates** by
+        // [`crate::lighting::Light::update`] (ray walks are at cell resolution),
+        // so the union-find must be built at cell resolution as well. Expand
+        // the tile map: every cell inherits the type of its containing tile.
+        // Two cells share a room iff their tiles share a type AND are
+        // 4-connected via same-type tiles — the union-find's adjacency union
+        // takes care of that automatically.
+        let cells_per_tile = self.cells_per_tile;
+        let tiles_per_row = self.tiles_per_row;
+        let cells_per_row = cells_per_tile * tiles_per_row;
+        let mut cell_map = vec![0i32; cells_per_row * cells_per_row];
+        for tile_y in 0..tiles_per_row {
+            for tile_x in 0..tiles_per_row {
+                let tile = self.tiles[tile_y * tiles_per_row + tile_x] as i32;
+                let cy0 = tile_y * cells_per_tile;
+                let cx0 = tile_x * cells_per_tile;
+                for dy in 0..cells_per_tile {
+                    let row = (cy0 + dy) * cells_per_row;
+                    for dx in 0..cells_per_tile {
+                        cell_map[row + cx0 + dx] = tile;
+                    }
+                }
+            }
+        }
+        self.collision.update_map_data(cell_map, cells_per_row);
+    }
+}
+
+/// Canonicalise an unordered tile-index pair so `(a, b)` and `(b, a)` map
+/// to the same `HashSet` entry.
+fn canonical_edge(a: usize, b: usize) -> (usize, usize) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
     }
 }
 
@@ -244,7 +363,7 @@ impl LightingEngine {
 /// WASM/JS API. Rust callers should prefer constructing their own
 /// [`LightingEngine`] via [`LightingEngine::new`].
 pub static DEFAULT_ENGINE: Lazy<RwLock<LightingEngine>> =
-    Lazy::new(|| RwLock::new(LightingEngine::new()));
+    Lazy::new(|| RwLock::new(LightingEngine::default()));
 
 /// Gradient used by [`LightingEngine::render_canvas_text`], from darkest to
 /// brightest. Ten characters → integer division by 255 maps cleanly.
@@ -284,13 +403,13 @@ mod tests {
 
     #[test]
     fn render_canvas_text_is_none_for_missing_light() {
-        let engine = LightingEngine::new();
+        let engine = LightingEngine::new(6, 30);
         assert!(engine.render_canvas_text(0).is_none());
     }
 
     #[test]
     fn render_canvas_text_dimensions_match_canvas() {
-        let mut engine = LightingEngine::new();
+        let mut engine = LightingEngine::new(6, 30);
         engine.update_or_add_light(1, 3, 5, 5);
         let s = engine.render_canvas_text(1).expect("light exists");
         let lines: Vec<&str> = s.lines().collect();
@@ -309,7 +428,7 @@ mod tests {
 
     #[test]
     fn render_canvas_text_center_brighter_than_corner() {
-        let mut engine = LightingEngine::new();
+        let mut engine = LightingEngine::new(6, 30);
         engine.update_or_add_light(1, 3, 5, 5);
         let s = engine.render_canvas_text(1).unwrap();
         let lines: Vec<&str> = s.lines().collect();
@@ -327,10 +446,83 @@ mod tests {
 
     #[test]
     fn independent_engines_do_not_share_lights() {
-        let mut a = LightingEngine::new();
-        let b = LightingEngine::new();
+        let mut a = LightingEngine::new(6, 30);
+        let b = LightingEngine::new(6, 30);
         a.update_or_add_light(7, 2, 4, 4);
         assert!(a.light_canvas(7).is_some());
         assert!(b.light_canvas(7).is_none());
+    }
+
+    #[test]
+    fn set_tile_at_non_default_resolution_marks_cell_edges() {
+        // Engine with explicit non-default resolution (4 cells per tile, 5x5 tiles).
+        let mut engine = LightingEngine::new(4, 5);
+        // Empty world: all tiles type 0 → no internal boundaries.
+        // Flip tile (2,2) to type 1, leaving its neighbours type 0.
+        engine.set_tile(2, 2, 1);
+        let cells = engine.block_map();
+        let cells_per_row = engine.cells_per_row();
+        // Top-left cell of tile (2,2) sits at cell (8,8). With cells_per_tile=4
+        // its edges are at cell rows/cols 8..=11. The north edge should be
+        // blocked (different from tile above), as should the west edge.
+        let nw = cells[8 * cells_per_row + 8];
+        assert!(nw.n_blocked, "NW cell should have north edge blocked");
+        assert!(nw.w_blocked, "NW cell should have west edge blocked");
+        // Inner cell (9,9) sits inside tile (2,2) — no edges blocked.
+        let inner = cells[9 * cells_per_row + 9];
+        assert!(!inner.n_blocked && !inner.s_blocked && !inner.e_blocked && !inner.w_blocked);
+    }
+
+    #[test]
+    fn engine_exposes_resolution() {
+        let e = LightingEngine::new(6, 30);
+        assert_eq!(e.cells_per_tile(), 6);
+        assert_eq!(e.tiles_per_row(), 30);
+
+        let e2 = LightingEngine::new(9, 20);
+        assert_eq!(e2.cells_per_tile(), 9);
+        assert_eq!(e2.tiles_per_row(), 20);
+    }
+
+    #[test]
+    fn set_door_edge_records_canonical_pair() {
+        let mut e = LightingEngine::default();
+        assert!(e.door_edges().is_empty());
+
+        // open=true records the edge; the pair is order-insensitive.
+        e.set_door_edge(5, 7, true);
+        assert!(e.has_door_edge(5, 7));
+        assert!(e.has_door_edge(7, 5));
+        assert_eq!(e.door_edges().len(), 1);
+
+        // open=false removes it.
+        e.set_door_edge(7, 5, false);
+        assert!(!e.has_door_edge(5, 7));
+        assert!(e.door_edges().is_empty());
+    }
+
+    #[test]
+    fn set_door_edge_does_not_affect_lighting_yet() {
+        // Placeholder semantics per issue #67: recording the door edge must
+        // not change the rendered canvas — the wiring lands in PR #2.
+        let mut e = LightingEngine::default();
+        e.update_or_add_light(1, 4, 10, 10);
+        let before: Vec<u8> = e
+            .light_canvas(1)
+            .unwrap()
+            .iter()
+            .map(|c| c.0.max(c.1).max(c.2))
+            .collect();
+
+        e.set_door_edge(0, 1, true);
+        // Re-render the light (door edge must not change the canvas).
+        e.update_or_add_light(1, 4, 10, 10);
+        let after: Vec<u8> = e
+            .light_canvas(1)
+            .unwrap()
+            .iter()
+            .map(|c| c.0.max(c.1).max(c.2))
+            .collect();
+        assert_eq!(before, after, "set_door_edge must be a no-op for lighting");
     }
 }

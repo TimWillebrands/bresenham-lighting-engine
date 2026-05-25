@@ -57,6 +57,11 @@ pub const SCENARIOS: &[Scenario] = &[
         description: "One light fully enclosed by a ring of object cells.",
         build: object_wall,
     },
+    Scenario {
+        name: "tile_wall_shadow",
+        description: "Two rooms split by tile-authored wall; light on one side should not leak to the other.",
+        build: tile_wall_shadow,
+    },
 ];
 
 /// Look up a scenario by name.
@@ -84,6 +89,33 @@ pub fn object_shadow(engine: &mut LightingEngine) -> u8 {
     1
 }
 
+/// Two rooms separated by a column of wall *tiles* (not object cells). A
+/// light placed in the western room should not leak into the eastern room.
+///
+/// This is the regression test for issue #67: walls authored via the
+/// tile-map API must occlude light, not just `set_pixel` Objects.
+pub fn tile_wall_shadow(engine: &mut LightingEngine) -> u8 {
+    let tpr = engine.tiles_per_row();
+    let cpt = engine.cells_per_tile();
+    // West half = room "1"; east half = room "2"; the boundary between them
+    // is a wall between two non-equal-type tiles (room-graph edge absent).
+    let mut tiles = vec![0u8; tpr * tpr];
+    for ty in 0..tpr {
+        for tx in 0..tpr {
+            tiles[ty * tpr + tx] = if tx < tpr / 2 { 1 } else { 2 };
+        }
+    }
+    engine.set_tile_map(tiles);
+    // Light pressed up against the *east* edge of the west room — the
+    // tile-boundary then sits exactly one cell east of the light, so the
+    // entire east half of the rendered canvas is on the far side of the wall.
+    let boundary_tx = tpr / 2;
+    let light_cx = (boundary_tx * cpt) as i16 - 1;
+    let light_cy = ((tpr / 2) * cpt + cpt / 2) as i16;
+    engine.update_or_add_light(1, 5, light_cx, light_cy);
+    1
+}
+
 /// Light surrounded on all four sides by object cells at distance 2.
 pub fn object_wall(engine: &mut LightingEngine) -> u8 {
     let (cx, cy) = (90i16, 90i16);
@@ -105,7 +137,7 @@ mod tests {
     #[test]
     fn every_scenario_builds_without_panic() {
         for s in SCENARIOS {
-            let mut e = LightingEngine::new();
+            let mut e = LightingEngine::default();
             let id = (s.build)(&mut e);
             assert!(
                 e.light_canvas(id).is_some(),

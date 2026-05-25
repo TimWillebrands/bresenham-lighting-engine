@@ -85,7 +85,7 @@ fn print_list() {
 }
 
 fn run_text(scenario: &Scenario) -> Result<(), String> {
-    let mut engine = LightingEngine::new();
+    let mut engine = LightingEngine::default();
     let light_id = (scenario.build)(&mut engine);
     let text = engine
         .render_canvas_text(light_id)
@@ -96,7 +96,7 @@ fn run_text(scenario: &Scenario) -> Result<(), String> {
 }
 
 fn run_png(scenario: &Scenario, out: &str) -> Result<(), String> {
-    let mut engine = LightingEngine::new();
+    let mut engine = LightingEngine::default();
     let light_id = (scenario.build)(&mut engine);
     let canvas = engine
         .light_canvas(light_id)
