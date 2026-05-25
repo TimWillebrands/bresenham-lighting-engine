@@ -483,7 +483,7 @@ macro_rules! console_log {
 // Re-export commonly used types for convenience
 pub use block_map::{init as init_block_map, CellDetails};
 pub use collision::{init as init_collision};
-pub use constants::*;
+pub use engine::{DEFAULT_CELLS_PER_TILE, DEFAULT_TILES_PER_ROW};
 pub use lighting::{init as init_lighting, Color};
 
 #[wasm_bindgen]
@@ -554,6 +554,90 @@ impl MapGrid {
     }
 }
 
+/// WASM/JS-facing wrapper around [`engine::LightingEngine`]. One instance per
+/// `Layer` (see [ADR-0002](../../docs/adr/0002-lighting-engine-per-layer.md));
+/// JS owns the handle and forwards tile/light mutations through it.
+#[wasm_bindgen(js_name = LightingEngine)]
+pub struct WasmLightingEngine {
+    inner: engine::LightingEngine,
+}
+
+#[wasm_bindgen(js_class = LightingEngine)]
+impl WasmLightingEngine {
+    #[wasm_bindgen(constructor)]
+    pub fn new(cells_per_tile: usize, tiles_per_row: usize) -> Self {
+        Self {
+            inner: engine::LightingEngine::new(cells_per_tile, tiles_per_row),
+        }
+    }
+
+    pub fn cells_per_tile(&self) -> usize {
+        self.inner.cells_per_tile()
+    }
+
+    pub fn tiles_per_row(&self) -> usize {
+        self.inner.tiles_per_row()
+    }
+
+    pub fn cells_per_row(&self) -> usize {
+        self.inner.cells_per_row()
+    }
+
+    /// Set a single tile's type. Triggers a block-map + room-graph refresh.
+    pub fn set_tile(&mut self, x: u32, y: u32, tile: u8) {
+        self.inner.set_tile(x, y, tile);
+    }
+
+    /// Push a tile-resolution map into the engine: copies the array into the
+    /// engine's tile storage, refreshes the derived cell-edge block-map, and
+    /// rebuilds the broad-phase room graph. Used by `YMapgrid` on layer init
+    /// to bring a freshly-observed tile array into a per-layer engine.
+    ///
+    /// `map_size` must equal the engine's `tiles_per_row`; mismatches are
+    /// silently ignored so callers see no panic at the wasm boundary.
+    pub fn set_map_data(&mut self, map_data: Vec<i32>, map_size: usize) {
+        if map_size != self.inner.tiles_per_row() {
+            return;
+        }
+        let tiles: Vec<u8> = map_data.iter().map(|&v| v as u8).collect();
+        self.inner.set_tile_map(tiles);
+    }
+
+    /// Mark a single cell as blocking (an Object cell — chairs, slimes, etc.).
+    pub fn set_pixel(&mut self, x: u16, y: u16, blocked: u8) {
+        self.inner.set_pixel(x, y, blocked != 0);
+    }
+
+    /// Clear all object cells (does not touch the tile map).
+    pub fn clear_pixel_collisions(&mut self) {
+        self.inner.clear_pixel_collisions();
+    }
+
+    /// Record (or remove) a door edge between two tiles. Inert in PR1 —
+    /// recorded only so the follow-up PR can wire the read side.
+    pub fn set_door_edge(&mut self, t1_idx: usize, t2_idx: usize, open: bool) {
+        self.inner.set_door_edge(t1_idx, t2_idx, open);
+    }
+
+    /// Create or update a rainbow light. Returns a pointer to the rendered
+    /// canvas (RGBA, `(r*2+1)²` pixels) in wasm linear memory.
+    pub fn put(&mut self, id: u8, r: i16, x: i16, y: i16) -> *const lighting::Color {
+        self.inner.update_or_add_light(id, r, x, y)
+    }
+
+    /// Create or update a solid-color light.
+    pub fn put_solid_color(
+        &mut self,
+        id: u8,
+        r: i16,
+        x: i16,
+        y: i16,
+        hue: u8,
+    ) -> *const lighting::Color {
+        self.inner.update_or_add_light_with_solid_color(id, r, x, y, hue)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,9 +650,10 @@ mod tests {
 
     #[test]
     fn test_tile_operations() {
+        use engine::DEFAULT_TILES_PER_ROW;
         // Test tile setting with valid coordinates
         set_tile(0, 0, 1);
-        set_tile(TILES_PER_ROW as u32 - 1, TILES_PER_ROW as u32 - 1, 2);
+        set_tile(DEFAULT_TILES_PER_ROW as u32 - 1, DEFAULT_TILES_PER_ROW as u32 - 1, 2);
 
         // Test tile setting with invalid coordinates (should not panic)
         set_tile(1000, 1000, 1);

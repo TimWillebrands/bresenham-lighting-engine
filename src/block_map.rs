@@ -10,7 +10,6 @@
 //!
 //! [`LightingEngine`]: crate::engine::LightingEngine
 
-use crate::constants::{CELLS_PER_ROW, CELLS_PER_TILE, CELLS_TOTAL, TILES_PER_ROW, TILES_TOTAL};
 use crate::engine::DEFAULT_ENGINE;
 
 /// Per-cell edge-blocking flags.
@@ -36,26 +35,27 @@ struct TileNeighborhood {
     west: u8,
 }
 
-fn neighborhood_of(tile_index: usize, tiles: &[u8]) -> TileNeighborhood {
-    let row = tile_index / TILES_PER_ROW;
+fn neighborhood_of(tile_index: usize, tiles: &[u8], tiles_per_row: usize) -> TileNeighborhood {
+    let tiles_total = tiles.len();
+    let row = tile_index / tiles_per_row;
     TileNeighborhood {
         tile: tiles[tile_index],
-        north: if tile_index >= TILES_PER_ROW {
-            tiles[tile_index - TILES_PER_ROW]
+        north: if tile_index >= tiles_per_row {
+            tiles[tile_index - tiles_per_row]
         } else {
             0
         },
-        east: if (tile_index + 1) / TILES_PER_ROW == row && tile_index + 1 < TILES_TOTAL {
+        east: if (tile_index + 1) / tiles_per_row == row && tile_index + 1 < tiles_total {
             tiles[tile_index + 1]
         } else {
             0
         },
-        south: if tile_index + TILES_PER_ROW < TILES_TOTAL {
-            tiles[tile_index + TILES_PER_ROW]
+        south: if tile_index + tiles_per_row < tiles_total {
+            tiles[tile_index + tiles_per_row]
         } else {
             0
         },
-        west: if tile_index > 0 && (tile_index - 1) / TILES_PER_ROW == row {
+        west: if tile_index > 0 && (tile_index - 1) / tiles_per_row == row {
             tiles[tile_index - 1]
         } else {
             0
@@ -64,24 +64,33 @@ fn neighborhood_of(tile_index: usize, tiles: &[u8]) -> TileNeighborhood {
 }
 
 /// Pure function: recompute the cell edge flags inside one tile from the tile
-/// map. Writes into `cells[..]` at the indices belonging to this tile.
+/// map at the given resolution. Writes into `cells[..]` at the indices belonging
+/// to this tile.
 ///
 /// Used by [`crate::engine::LightingEngine`] to refresh its block map when a
 /// tile changes.
-pub fn compute_cell_details_for_tile(tile_idx: usize, tiles: &[u8], cells: &mut [CellDetails]) {
-    let neighborhood = neighborhood_of(tile_idx, tiles);
-    let tile_x = tile_idx % TILES_PER_ROW;
-    let tile_y = tile_idx / TILES_PER_ROW;
+pub fn compute_cell_details_for_tile(
+    tile_idx: usize,
+    tiles: &[u8],
+    cells: &mut [CellDetails],
+    cells_per_tile: usize,
+    tiles_per_row: usize,
+) {
+    let neighborhood = neighborhood_of(tile_idx, tiles, tiles_per_row);
+    let tile_x = tile_idx % tiles_per_row;
+    let tile_y = tile_idx / tiles_per_row;
+    let cells_per_row = cells_per_tile * tiles_per_row;
+    let cells_total = cells.len();
 
-    let start_x = tile_x * CELLS_PER_TILE;
-    let start_y = tile_y * CELLS_PER_TILE;
-    let end_x = (tile_x + 1) * CELLS_PER_TILE - 1;
-    let end_y = (tile_y + 1) * CELLS_PER_TILE - 1;
+    let start_x = tile_x * cells_per_tile;
+    let start_y = tile_y * cells_per_tile;
+    let end_x = (tile_x + 1) * cells_per_tile - 1;
+    let end_y = (tile_y + 1) * cells_per_tile - 1;
 
     for y in start_y..=end_y {
         for x in start_x..=end_x {
-            let cell_index = y * CELLS_PER_ROW + x;
-            if cell_index >= CELLS_TOTAL {
+            let cell_index = y * cells_per_row + x;
+            if cell_index >= cells_total {
                 continue;
             }
             let cell = &mut cells[cell_index];
@@ -137,6 +146,7 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::DEFAULT_TILES_PER_ROW as TILES_PER_ROW;
 
     #[test]
     fn test_set_tile_updates_blocking() {

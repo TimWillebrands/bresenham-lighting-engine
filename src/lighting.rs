@@ -1,17 +1,18 @@
 //! Core lighting calculations and ray-casting.
 //!
 //! [`Light`] is the per-light renderer; the engine ([`crate::engine::LightingEngine`])
-//! owns a registry of them and a [`crate::collision::HybridCollisionMap`] that they
-//! consult during ray traversal.
+//! owns a registry of them, a [`crate::collision::HybridCollisionMap`] that they
+//! consult during ray traversal, and the precomputed Bresenham ray table
+//! ([`RayTable`]) they sample to walk those rays.
 //!
-//! The precomputed Bresenham ray table [`ALL_RAYS`] is a pure function of the
-//! `MAX_DIST` and `ANGLES` compile-time constants and is shared across all engines.
+//! Per [ADR-0008](../../docs/decisions/0008-per-engine-all-rays-and-runtime-resolution.md),
+//! the ray table is per-engine — each engine builds its own at construction
+//! time. The previous process-wide `ALL_RAYS` is gone.
 //!
 //! Free functions in this module are back-compat shims that operate on the
 //! process-wide [`crate::engine::DEFAULT_ENGINE`]. New Rust code should
 //! construct its own [`crate::engine::LightingEngine`] and call methods on it.
 
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
 
 use crate::collision::{CollisionDetector, HybridCollisionMap};
@@ -56,17 +57,22 @@ type PtI = (i16, i16);
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Color(pub u8, pub u8, pub u8, pub u8);
 
-/// Process-wide precomputed Bresenham ray table.
+/// Per-engine precomputed Bresenham ray table.
 ///
 /// Keyed by `(distance, angle)`, each entry lists the cell offsets at that
-/// distance/angle relative to a light at the origin. Because this is a pure
-/// function of the compile-time constants `MAX_DIST` and `ANGLES`, it is
-/// safely shared across every [`crate::engine::LightingEngine`].
-pub(crate) static ALL_RAYS: Lazy<HashMap<(usize, usize), Vec<PtI>>> = Lazy::new(|| {
-    let mut rays: HashMap<(usize, usize), Vec<PtI>> = HashMap::new();
+/// distance/angle relative to a light at the origin. Built once at engine
+/// construction time from the engine's `max_dist` (per ADR-0008).
+pub type RayTable = HashMap<(usize, usize), Vec<PtI>>;
 
-    let center = (0, 0);
-    let radius = MAX_DIST as i16;
+/// Build a Bresenham ray table for the given maximum ray length.
+///
+/// Used by [`crate::engine::LightingEngine::new`] to populate its per-instance
+/// `all_rays` field.
+pub(crate) fn build_ray_table(max_dist: usize) -> RayTable {
+    let mut rays: RayTable = HashMap::new();
+
+    let center = (0i16, 0i16);
+    let radius = max_dist as i16;
     let top = center.1 - radius;
     let bottom = center.1 + radius;
     let left = center.0 - radius;
@@ -82,7 +88,7 @@ pub(crate) static ALL_RAYS: Lazy<HashMap<(usize, usize), Vec<PtI>>> = Lazy::new(
                 let angle = (raw_angle as usize) % ANGLES;
                 let distance = dist as usize;
 
-                if angle >= ANGLES || distance >= MAX_DIST {
+                if angle >= ANGLES || distance >= max_dist {
                     continue;
                 }
 
@@ -92,7 +98,7 @@ pub(crate) static ALL_RAYS: Lazy<HashMap<(usize, usize), Vec<PtI>>> = Lazy::new(
     }
 
     rays
-});
+}
 
 /// A single point light's per-instance state and render output.
 ///
@@ -147,8 +153,15 @@ impl Light {
         self.color_mode = color_mode;
     }
 
-    /// Recalculate this light's canvas, consulting `collision` for occlusion.
-    pub(crate) fn update(&mut self, collision: &HybridCollisionMap) -> *const Color {
+    /// Recalculate this light's canvas, consulting `collision` for occlusion
+    /// and `rays` for precomputed Bresenham geometry. `max_dist` caps the
+    /// effective light radius for this pass.
+    pub(crate) fn update(
+        &mut self,
+        collision: &HybridCollisionMap,
+        rays: &RayTable,
+        max_dist: usize,
+    ) -> *const Color {
         let new_canvas_size = (self.r * 2 + 1) as usize;
         let new_canvas_pixels = new_canvas_size * new_canvas_size;
         if self.canvas.len() != new_canvas_pixels {
@@ -160,7 +173,7 @@ impl Light {
         self.canvas.iter_mut().for_each(|p| *p = Color::default());
 
         for d in 0..self.r as usize {
-            if d >= MAX_DIST {
+            if d >= max_dist {
                 break;
             }
 
@@ -169,7 +182,7 @@ impl Light {
                     continue;
                 }
 
-                if let Some(cells) = ALL_RAYS.get(&(d, angle)) {
+                if let Some(cells) = rays.get(&(d, angle)) {
                     for cell in cells {
                         if d == 0 && angle % 90 != 0 {
                             continue;
@@ -305,8 +318,8 @@ pub fn update_collision_map(map_data: Vec<i32>, map_size: usize) {
     }
 }
 
-/// Force initialization of process-wide ray geometry caches. Cheap to call
-/// repeatedly; no-op after the first invocation.
+/// Force initialization of the default engine (which builds its own ray
+/// geometry cache during construction). Cheap to call repeatedly.
 pub fn init() {
-    Lazy::force(&ALL_RAYS);
+    once_cell::sync::Lazy::force(&DEFAULT_ENGINE);
 }
