@@ -25,8 +25,12 @@ A coherent group of blocked **Cells** in the runtime-mutable collision bitmap (`
 _Avoid_: "obstacle" (ambiguous with **Wall**), "pixel obstacle" (confusing — see "Cell"), conflating "Object" with the atomic single-cell write.
 
 **Room**:
-A maximal set of tiles connected by walkable adjacency (same tile type, no wall between them). Computed by `UnionFind` from the tile map. The broad-phase collision check rejects a ray when its endpoints lie in different rooms.
+A maximal set of tiles connected by walkable adjacency (same tile type, no wall between them, and no closed **Door** on the boundary). Computed by `UnionFind` from the tile map plus the door-edge overlay. The broad-phase collision check rejects a ray when its endpoints lie in different rooms.
 _Avoid_: "region", "area".
+
+**Door**:
+A passable edge between two tiles that the tile-map alone would split into different **Rooms**. Stored separately from the tile map as `door_edges: HashMap<(TileIdx, TileIdx), DoorState>` on `LightingEngine`. Consulted by both the broad-phase Room check (an open Door joins the rooms across that edge) and the narrow-phase cell-edge wall flags (an open Door clears the wall along its tile boundary). Doors are not **Wall**s and not **Object**s — they are a third collision primitive.
+_Avoid_: "passage", "doorway gap" (the empty-tile case is just a same-type tile boundary, no Door needed), "wall token" (a downstream JS authoring concept).
 
 ### Lighting
 
