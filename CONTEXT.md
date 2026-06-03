@@ -47,6 +47,10 @@ The output buffer for a single light — RGBA values per cell within the light's
 **Ray**:
 A precomputed Bresenham path from a light's centre to one of `ANGLES` directions at one of `MAX_DIST` distances. Stored in the `ALL_RAYS` lookup table.
 
+**Ambient**:
+A room-bounded minimum lighting floor. Unlike a **Light** (a point source with radial falloff), an Ambient fills every **Cell** of a single same-type tile **Room** uniformly and contributes nothing outside it. Produced by an *ambient emitter* — a **Token** carrying the `<ambient>` capability (sibling to the `<light>` capability) — dropped on a tile; the emitter floods the `UnionFind` Room containing that tile. Hard-bounded to the same-type region: it never crosses a **Door**, open or closed (the room boundary is the `tile_uf` partition, which ignores door state). Two or more emitters in the same Room blend, composited the same way Lights are. There is no persisted "room ambient" value — the emitter Token is the sole carrier, so ambient survives tile edits, room splits, and merges by following its emitter.
+_Avoid_: "global light" (ambient is per-room, not scene-wide), "room property" / "room ambient" (ambient is an emitter on a Token, not persisted state on a room), "anchor tile" (an early framing — the emitter is an explicit Token, not a tagged tile).
+
 ## Relationships
 
 - The world has exactly **one** Tile layout, which deterministically defines all **Walls** and all **Rooms**.

@@ -29,7 +29,7 @@ use once_cell::sync::Lazy;
 
 use crate::block_map::{compute_cell_details_for_tile, CellDetails};
 use crate::collision::HybridCollisionMap;
-use crate::lighting::{build_ray_table, Color, ColorMode, Light, RayTable};
+use crate::lighting::{build_ray_table, Ambient, Color, ColorMode, Light, RayTable};
 use crate::map_grid::UnionFind;
 
 /// Default cell-grid subdivision per tile, used by [`LightingEngine::default`]
@@ -53,6 +53,9 @@ pub struct LightingEngine {
     cells: Vec<CellDetails>,
     collision: HybridCollisionMap,
     lights: HashMap<u8, Light>,
+    /// Registry of active room-bounded ambient emitters, parallel to `lights`.
+    /// Each entry owns a full-map canvas flooded by `update_or_add_ambient`.
+    ambients: HashMap<u8, Ambient>,
     /// Open door edges as canonical `(lo, hi)` tile-index pairs. An entry's
     /// presence = door open (tiles joined for lighting and pathfinding);
     /// absence = closed (room boundary stands). See ADR-0003.
@@ -97,6 +100,7 @@ impl LightingEngine {
             cells,
             collision,
             lights: HashMap::new(),
+            ambients: HashMap::new(),
             door_edges: HashSet::new(),
             tile_uf,
         }
@@ -275,6 +279,72 @@ impl LightingEngine {
             y,
             Some(ColorMode::Custom { hue, saturation }),
         )
+    }
+
+    /// Create or update a room-bounded ambient emitter and return a pointer to
+    /// its full-map canvas (`cells_per_row²` RGBA cells in wasm linear memory).
+    ///
+    /// The emitter floods the same-type [`UnionFind`] room of the tile at
+    /// `(tile_x, tile_y)` — every cell of every tile sharing that tile's room
+    /// is filled with `Color(r, g, b, 255)`; everything else stays transparent
+    /// `(0, 0, 0, 0)`. Because the room is the `tile_uf` partition (which is
+    /// door-agnostic, per ADR-0003), the fill never crosses a Door, open or
+    /// closed. An emitter on a non-floor tile (`tile <= 0`) or out of range
+    /// emits an empty (fully transparent) canvas.
+    pub fn update_or_add_ambient(
+        &mut self,
+        id: u8,
+        tile_x: i16,
+        tile_y: i16,
+        r: u8,
+        g: u8,
+        b: u8,
+    ) -> *const Color {
+        let tiles_per_row = self.tiles_per_row;
+        let cells_per_tile = self.cells_per_tile;
+        let cells_per_row = self.cells_per_row();
+        let color = Color(r, g, b, 255);
+
+        // Resolve the emitter tile's room first (needs `&mut tile_uf` for
+        // find()), then collect every tile in that room. Done before borrowing
+        // `ambients` so the two mutable borrows of `self` don't overlap.
+        let in_range = tile_x >= 0
+            && tile_y >= 0
+            && (tile_x as usize) < tiles_per_row
+            && (tile_y as usize) < tiles_per_row;
+        let mut room_tiles: Vec<usize> = Vec::new();
+        if in_range {
+            let index = (tile_x as usize) + (tile_y as usize) * tiles_per_row;
+            if self.tile_at(index) > 0 {
+                let room = self.tile_uf.find(index);
+                for i in 0..tiles_per_row * tiles_per_row {
+                    if self.tile_at(i) > 0 && self.tile_uf.find(i) == room {
+                        room_tiles.push(i);
+                    }
+                }
+            }
+        }
+
+        let ambient = self
+            .ambients
+            .entry(id)
+            .or_insert_with(|| Ambient::new(cells_per_row));
+        ambient.clear();
+        for &ti in &room_tiles {
+            ambient.fill_tile(
+                ti % tiles_per_row,
+                ti / tiles_per_row,
+                cells_per_tile,
+                color,
+            );
+        }
+        ambient.canvas().as_ptr()
+    }
+
+    /// Borrow an ambient emitter's full-map canvas if one with the given id
+    /// exists.
+    pub fn ambient_canvas(&self, id: u8) -> Option<&[Color]> {
+        self.ambients.get(&id).map(|a| a.canvas())
     }
 
     /// Borrow a light's canvas if one with the given id exists.
@@ -928,6 +998,135 @@ mod tests {
             !e.neighbours(row3_col1, false).contains(&row4_col1),
             "non-door boundary must not be a neighbour"
         );
+    }
+
+    // --- Ambient emitter ---------------------------------------------------
+
+    /// Helper: is the cell at the centre of tile `(tx, ty)` opaque (in-room)?
+    fn ambient_cell_opaque(e: &LightingEngine, id: u8, tx: usize, ty: usize) -> bool {
+        let cpt = e.cells_per_tile();
+        let cpr = e.cells_per_row();
+        let cx = tx * cpt + cpt / 2;
+        let cy = ty * cpt + cpt / 2;
+        let canvas = e.ambient_canvas(id).expect("ambient exists");
+        canvas[cy * cpr + cx].3 != 0
+    }
+
+    #[test]
+    fn ambient_floods_only_its_room() {
+        // Two rooms separated by a column of wall tiles (type 0) at x=2.
+        let mut e = LightingEngine::new(2, 5);
+        let mut tiles = vec![1u8; 25];
+        for y in 0..5 {
+            tiles[y * 5 + 2] = 0; // wall column
+        }
+        e.set_tile_map(tiles);
+
+        // Emitter in the west room (tile (1,1)).
+        e.update_or_add_ambient(0, 1, 1, 140, 130, 120);
+
+        // West-room cells are filled with the authored colour...
+        let cpr = e.cells_per_row();
+        let cpt = e.cells_per_tile();
+        let west = e.ambient_canvas(0).unwrap()[(1 * cpt + 1) * cpr + (1 * cpt + 1)];
+        assert_eq!((west.0, west.1, west.2, west.3), (140, 130, 120, 255));
+        assert!(ambient_cell_opaque(&e, 0, 0, 0), "same-room tile filled");
+
+        // ...east-room cells (x>=3) stay transparent.
+        assert!(!ambient_cell_opaque(&e, 0, 3, 1), "east room must be dark");
+        assert!(!ambient_cell_opaque(&e, 0, 4, 0), "east room must be dark");
+        // Wall column itself stays transparent.
+        assert!(!ambient_cell_opaque(&e, 0, 2, 1), "wall tile must be dark");
+    }
+
+    #[test]
+    fn ambient_does_not_cross_door_open_or_closed() {
+        // Two same-... no: two rooms of different tile types share a vertical
+        // boundary at column x=2 (west type 1, east type 2). A door joins them
+        // for pathfinding/lighting, but ambient is `tile_uf`-bounded and must
+        // not cross regardless of door state.
+        let mut e = LightingEngine::new(2, 5);
+        let mut tiles = vec![1u8; 25];
+        for y in 0..5 {
+            for x in 2..5 {
+                tiles[y * 5 + x] = 2;
+            }
+        }
+        e.set_tile_map(tiles);
+
+        // Closed door: east room dark.
+        e.update_or_add_ambient(0, 1, 1, 100, 100, 100);
+        assert!(ambient_cell_opaque(&e, 0, 1, 1), "west room filled");
+        assert!(!ambient_cell_opaque(&e, 0, 3, 1), "closed door: east dark");
+
+        // Open the door between (1,1) and (2,1); re-flood. Still east dark.
+        e.set_door_edge(1 * 5 + 1, 1 * 5 + 2, true);
+        e.update_or_add_ambient(0, 1, 1, 100, 100, 100);
+        assert!(ambient_cell_opaque(&e, 0, 1, 1), "west room still filled");
+        assert!(
+            !ambient_cell_opaque(&e, 0, 3, 1),
+            "open door must NOT let ambient cross (tile_uf is door-agnostic)"
+        );
+    }
+
+    #[test]
+    fn ambient_on_non_floor_tile_is_empty() {
+        let mut e = LightingEngine::new(2, 5);
+        // Whole map is floor except tile (1,1) which is a wall (type 0).
+        let mut tiles = vec![1u8; 25];
+        tiles[1 * 5 + 1] = 0;
+        e.set_tile_map(tiles);
+
+        e.update_or_add_ambient(0, 1, 1, 200, 50, 50);
+        let canvas = e.ambient_canvas(0).unwrap();
+        assert!(
+            canvas.iter().all(|c| c.3 == 0),
+            "emitter on a non-floor tile emits a fully transparent canvas"
+        );
+    }
+
+    #[test]
+    fn ambient_out_of_range_is_empty() {
+        let mut e = LightingEngine::new(2, 5);
+        e.set_tile_map(vec![1u8; 25]);
+        e.update_or_add_ambient(0, -1, 99, 10, 20, 30);
+        let canvas = e.ambient_canvas(0).unwrap();
+        assert!(canvas.iter().all(|c| c.3 == 0), "out-of-range → empty canvas");
+    }
+
+    #[test]
+    fn two_ambient_emitters_fill_their_respective_rooms() {
+        // Two rooms split by a wall column at x=2; an emitter in each.
+        let mut e = LightingEngine::new(2, 5);
+        let mut tiles = vec![1u8; 25];
+        for y in 0..5 {
+            tiles[y * 5 + 2] = 0;
+        }
+        e.set_tile_map(tiles);
+
+        e.update_or_add_ambient(0, 1, 1, 100, 0, 0); // west
+        e.update_or_add_ambient(1, 3, 1, 0, 0, 100); // east
+
+        assert!(ambient_cell_opaque(&e, 0, 1, 1) && !ambient_cell_opaque(&e, 0, 3, 1));
+        assert!(ambient_cell_opaque(&e, 1, 3, 1) && !ambient_cell_opaque(&e, 1, 1, 1));
+    }
+
+    #[test]
+    fn ambient_reflood_tracks_room_after_tile_edit() {
+        // An emitter floods the whole one-room map; painting a wall that splits
+        // the room (and re-flooding) leaves only the emitter's half lit.
+        let mut e = LightingEngine::new(2, 5);
+        e.set_tile_map(vec![1u8; 25]);
+        e.update_or_add_ambient(0, 0, 1, 80, 80, 80);
+        assert!(ambient_cell_opaque(&e, 0, 4, 1), "single room: far tile lit");
+
+        // Split with a wall column at x=2.
+        for y in 0..5 {
+            e.set_tile(2, y as u32, 0);
+        }
+        e.update_or_add_ambient(0, 0, 1, 80, 80, 80);
+        assert!(ambient_cell_opaque(&e, 0, 0, 1), "emitter half stays lit");
+        assert!(!ambient_cell_opaque(&e, 0, 4, 1), "far half now dark after split");
     }
 
     #[test]

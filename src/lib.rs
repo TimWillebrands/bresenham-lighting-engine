@@ -601,6 +601,24 @@ impl WasmLightingEngine {
     ) -> *const lighting::Color {
         self.inner.update_or_add_light_with_solid_color(id, r, x, y, hue)
     }
+
+    /// Create or update a room-bounded ambient emitter. Floods the same-type
+    /// `UnionFind` room of tile `(tile_x, tile_y)` with a flat `(r, g, b)`,
+    /// returning a pointer to its full-map canvas (`cells_per_row²` RGBA cells).
+    /// Mirrors `put_solid_color` but preserves authored RGB (no hue/saturation
+    /// lossiness) and is room-bounded rather than radial. A non-floor tile
+    /// (`tile <= 0`) yields an empty canvas. See ADR-0004.
+    pub fn put_ambient(
+        &mut self,
+        id: u8,
+        tile_x: i16,
+        tile_y: i16,
+        r: u8,
+        g: u8,
+        b: u8,
+    ) -> *const lighting::Color {
+        self.inner.update_or_add_ambient(id, tile_x, tile_y, r, g, b)
+    }
 }
 
 #[cfg(test)]

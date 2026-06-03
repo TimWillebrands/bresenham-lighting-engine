@@ -249,6 +249,61 @@ impl Light {
     }
 }
 
+/// A room-bounded flat ambient fill.
+///
+/// Unlike a [`Light`] (a point source with radial falloff), an `Ambient` has
+/// no radius, intensity, or falloff: every cell of a single same-type tile
+/// **Room** is filled with one flat RGB colour. Alpha is the in-room/out-of-room
+/// mask (`255` inside the room, `0` everywhere else). The canvas is full-map
+/// sized (`cells_per_row²`) so the JS compositor can blit it at origin `(0,0)`.
+///
+/// Owned by [`crate::engine::LightingEngine`], which floods it via
+/// `update_or_add_ambient`. The persistent allocation keeps the canvas pointer
+/// returned to JS valid between frames.
+pub struct Ambient {
+    canvas: Vec<Color>,
+    canvas_size: usize,
+}
+
+impl Ambient {
+    /// Allocate a transparent full-map canvas of `canvas_size² ` cells.
+    pub(crate) fn new(canvas_size: usize) -> Self {
+        Ambient {
+            canvas: vec![Color::default(); canvas_size * canvas_size],
+            canvas_size,
+        }
+    }
+
+    pub(crate) fn canvas(&self) -> &[Color] {
+        &self.canvas
+    }
+
+    /// Reset every cell to transparent.
+    pub(crate) fn clear(&mut self) {
+        self.canvas.iter_mut().for_each(|p| *p = Color::default());
+    }
+
+    /// Fill the `cells_per_tile²` block of cells belonging to tile
+    /// `(tile_x, tile_y)` with `color`.
+    pub(crate) fn fill_tile(
+        &mut self,
+        tile_x: usize,
+        tile_y: usize,
+        cells_per_tile: usize,
+        color: Color,
+    ) {
+        let cells_per_row = self.canvas_size;
+        let cx0 = tile_x * cells_per_tile;
+        let cy0 = tile_y * cells_per_tile;
+        for dy in 0..cells_per_tile {
+            let row = (cy0 + dy) * cells_per_row;
+            for dx in 0..cells_per_tile {
+                self.canvas[row + cx0 + dx] = color;
+            }
+        }
+    }
+}
+
 /// HSV-to-RGB conversion. Alpha is always 255.
 pub(crate) fn hsv2rgb(h: u8, s: u8, v: u8) -> Color {
     if s == 0 {
