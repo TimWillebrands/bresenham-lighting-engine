@@ -51,6 +51,17 @@ A precomputed Bresenham path from a light's centre to one of `ANGLES` directions
 A room-bounded minimum lighting floor. Unlike a **Light** (a point source with radial falloff), an Ambient fills every **Cell** of a single same-type tile **Room** uniformly and contributes nothing outside it. Produced by an *ambient emitter* — a **Token** carrying the `<ambient>` capability (sibling to the `<light>` capability) — dropped on a tile; the emitter floods the `UnionFind` Room containing that tile. Hard-bounded to the same-type region: it never crosses a **Door**, open or closed (the room boundary is the `tile_uf` partition, which ignores door state). Two or more emitters in the same Room blend, composited the same way Lights are. There is no persisted "room ambient" value — the emitter Token is the sole carrier, so ambient survives tile edits, room splits, and merges by following its emitter.
 _Avoid_: "global light" (ambient is per-room, not scene-wide), "room property" / "room ambient" (ambient is an emitter on a Token, not persisted state on a room), "anchor tile" (an early framing — the emitter is an explicit Token, not a tagged tile).
 
+**FOV canvas**:
+A full-map RGBA canvas (like an **Ambient**'s output, not a **Light**'s
+bounding square) marking which Cells are reachable by rays from any of a
+supplied list of *viewer points* (cell coords, fixed radius). Binary alpha —
+a cell is visible or it isn't. The engine computes the live mask only; it
+holds **no** explored/fog memory — fog accumulation is a downstream renderer
+concern.
+_Avoid_: "fog", "explored mask" (neither exists in this engine), "viewer"
+as an engine entity (a viewer here is just an input point, not a stored
+object).
+
 ## Relationships
 
 - The world has exactly **one** Tile layout, which deterministically defines all **Walls** and all **Rooms**.

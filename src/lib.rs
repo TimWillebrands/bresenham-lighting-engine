@@ -619,6 +619,17 @@ impl WasmLightingEngine {
     ) -> *const lighting::Color {
         self.inner.update_or_add_ambient(id, tile_x, tile_y, r, g, b)
     }
+
+    /// Compute the live field-of-view mask for a flat array of viewer points in
+    /// cell coords (`[x0, y0, x1, y1, …]`, arriving as an `Int16Array`) and
+    /// return a pointer to a full-map **FOV canvas** (`cells_per_row²` RGBA
+    /// cells in wasm linear memory). Cells reached by any viewer's rays are
+    /// opaque white; everything else is transparent. Binary alpha — no falloff.
+    /// The canvas is reused between calls, so read it back through the
+    /// wasm-memory view before the next `compute_fov`. See ADR-0006.
+    pub fn compute_fov(&mut self, viewers: Vec<i16>) -> *const lighting::Color {
+        self.inner.compute_fov(&viewers)
+    }
 }
 
 #[cfg(test)]

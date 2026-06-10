@@ -29,7 +29,9 @@ use once_cell::sync::Lazy;
 
 use crate::block_map::{compute_cell_details_for_tile, CellDetails};
 use crate::collision::HybridCollisionMap;
-use crate::lighting::{build_ray_table, Ambient, Color, ColorMode, Light, RayTable};
+use crate::lighting::{
+    build_ray_table, trace_visible_cells, Ambient, Color, ColorMode, Fov, Light, RayTable,
+};
 use crate::map_grid::UnionFind;
 
 /// Default cell-grid subdivision per tile, used by [`LightingEngine::default`]
@@ -56,6 +58,10 @@ pub struct LightingEngine {
     /// Registry of active room-bounded ambient emitters, parallel to `lights`.
     /// Each entry owns a full-map canvas flooded by `update_or_add_ambient`.
     ambients: HashMap<u8, Ambient>,
+    /// Lazily-allocated full-map FOV canvas, reused across `compute_fov` calls
+    /// so the pointer handed to JS stays valid between frames. The engine holds
+    /// no fog/explored memory (ADR-0006) — this is the live mask only.
+    fov: Option<Fov>,
     /// Open door edges as canonical `(lo, hi)` tile-index pairs. An entry's
     /// presence = door open (tiles joined for lighting and pathfinding);
     /// absence = closed (room boundary stands). See ADR-0003.
@@ -101,6 +107,7 @@ impl LightingEngine {
             collision,
             lights: HashMap::new(),
             ambients: HashMap::new(),
+            fov: None,
             door_edges: HashSet::new(),
             tile_uf,
         }
@@ -345,6 +352,48 @@ impl LightingEngine {
     /// exists.
     pub fn ambient_canvas(&self, id: u8) -> Option<&[Color]> {
         self.ambients.get(&id).map(|a| a.canvas())
+    }
+
+    /// Compute the live field-of-view mask for a set of viewer points and
+    /// return a pointer to the resulting full-map **FOV canvas**
+    /// (`cells_per_row²` RGBA cells in wasm linear memory).
+    ///
+    /// `viewers` is a flat array of viewer positions in cell coords
+    /// `[x0, y0, x1, y1, …]`; a trailing odd element (if any) is ignored. Each
+    /// viewer casts rays out to the ray table's max distance through the same
+    /// Room + Object collision as [`Light::update`] (minus colour and falloff);
+    /// every cell a ray reaches is marked opaque white `(255, 255, 255, 255)`
+    /// and everything else stays transparent `(0, 0, 0, 0)`. Results union
+    /// across viewers (marking is idempotent). An empty `viewers` array yields a
+    /// fully-transparent canvas.
+    ///
+    /// Pure compute: the engine stores no explored/fog memory (ADR-0006). The
+    /// returned canvas is overwritten on the next call.
+    pub fn compute_fov(&mut self, viewers: &[i16]) -> *const Color {
+        let cells_per_row = self.cells_per_row();
+        let max_dist = self.max_dist;
+
+        // Disjoint field borrows: `collision` + `all_rays` immutably, `fov`
+        // mutably. Bind each field directly so the borrow checker sees them as
+        // non-overlapping.
+        let collision = &self.collision;
+        let rays = &self.all_rays;
+        let fov = self.fov.get_or_insert_with(|| Fov::new(cells_per_row));
+
+        fov.clear();
+        for pair in viewers.chunks_exact(2) {
+            let pos = (pair[0], pair[1]);
+            trace_visible_cells(pos, collision, rays, max_dist, |offset, _angle, _d| {
+                fov.mark(pos.0 + offset.0, pos.1 + offset.1);
+            });
+        }
+        fov.canvas().as_ptr()
+    }
+
+    /// Borrow the most recently computed FOV canvas, if [`Self::compute_fov`]
+    /// has been called at least once.
+    pub fn fov_canvas(&self) -> Option<&[Color]> {
+        self.fov.as_ref().map(|f| f.canvas())
     }
 
     /// Borrow a light's canvas if one with the given id exists.
@@ -1127,6 +1176,148 @@ mod tests {
         e.update_or_add_ambient(0, 0, 1, 80, 80, 80);
         assert!(ambient_cell_opaque(&e, 0, 0, 1), "emitter half stays lit");
         assert!(!ambient_cell_opaque(&e, 0, 4, 1), "far half now dark after split");
+    }
+
+    // --- FOV canvas --------------------------------------------------------
+
+    /// Helper: is cell `(cx, cy)` opaque (visible) in the last FOV canvas?
+    fn fov_visible(e: &LightingEngine, cx: usize, cy: usize) -> bool {
+        let cpr = e.cells_per_row();
+        e.fov_canvas().expect("compute_fov was called")[cy * cpr + cx].3 != 0
+    }
+
+    /// Helper: count visible cells whose `cx` falls in `[cx_lo, cx_hi)`.
+    /// The low-res test ray table (36 angles / dist 10) paints a holey disc, so
+    /// region counts are robust where single-cell sampling is flaky.
+    fn fov_count_in_columns(e: &LightingEngine, cx_lo: usize, cx_hi: usize) -> usize {
+        let cpr = e.cells_per_row();
+        let canvas = e.fov_canvas().expect("compute_fov was called");
+        let mut n = 0;
+        for cy in 0..cpr {
+            for cx in cx_lo..cx_hi {
+                if canvas[cy * cpr + cx].3 != 0 {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn fov_single_viewer_in_open_room() {
+        // Empty world = one big room, no walls. A viewer sees its own cell and a
+        // fan of nearby cells, but nothing past the ray table's max distance.
+        let mut e = LightingEngine::new(2, 30);
+        e.compute_fov(&[20, 20]);
+        let cpr = e.cells_per_row();
+        // The viewer's own cell is opaque white — binary alpha, no falloff.
+        let here = e.fov_canvas().expect("computed")[20 * cpr + 20];
+        assert_eq!((here.0, here.1, here.2, here.3), (255, 255, 255, 255));
+        // Rays fan out, so many cells around the viewer are lit.
+        assert!(
+            fov_count_in_columns(&e, 0, cpr) > 20,
+            "an open-room viewer lights a fan of cells"
+        );
+        // Sight is capped at the ray table's max distance (10 cells in test
+        // builds): a cell well beyond it stays dark.
+        assert!(!fov_visible(&e, 20, 35), "a far cell is out of sight");
+    }
+
+    #[test]
+    fn fov_blocked_by_wall() {
+        // Two rooms split by a wall column (type 0) at tile x=4; rest type 1.
+        // Without the wall the viewer would see east-room cells; the wall must
+        // occlude every one of them.
+        let mut e = LightingEngine::new(4, 8);
+        let tpr = e.tiles_per_row();
+        let cpt = e.cells_per_tile();
+        let wall_cx = (tpr / 2) * cpt; // first east-of-wall cell column
+        let vx = (3 * cpt + cpt / 2) as i16;
+        let vy = (4 * cpt + cpt / 2) as i16;
+        let cpr = e.cells_per_row();
+
+        // Baseline: open room, viewer sees across into the (future) east columns.
+        e.set_tile_map(vec![1u8; tpr * tpr]);
+        e.compute_fov(&[vx, vy]);
+        assert!(
+            fov_count_in_columns(&e, wall_cx, cpr) > 0,
+            "without a wall the viewer sees east-of-boundary cells"
+        );
+
+        // Now raise the wall column and re-cast: the east room goes fully dark.
+        let mut tiles = vec![1u8; tpr * tpr];
+        for y in 0..tpr {
+            tiles[y * tpr + tpr / 2] = 0;
+        }
+        e.set_tile_map(tiles);
+        e.compute_fov(&[vx, vy]);
+        assert!(fov_visible(&e, vx as usize, vy as usize), "viewer cell still lit");
+        assert_eq!(
+            fov_count_in_columns(&e, wall_cx, cpr),
+            0,
+            "wall must occlude all sight into the east room"
+        );
+    }
+
+    #[test]
+    fn fov_blocked_without_door_visible_with_open_door() {
+        // West tiles type 1 (x<4), east tiles type 2 (x>=4): a room boundary at
+        // the tile-3 / tile-4 edge. A viewer in the west reaches the east room
+        // only when a door is open across that exact edge.
+        let mut e = LightingEngine::new(4, 8);
+        let tpr = e.tiles_per_row();
+        let cpt = e.cells_per_tile();
+        let mut tiles = vec![1u8; tpr * tpr];
+        for y in 0..tpr {
+            for x in (tpr / 2)..tpr {
+                tiles[y * tpr + x] = 2;
+            }
+        }
+        e.set_tile_map(tiles);
+
+        let vx = (3 * cpt + cpt / 2) as i16;
+        let vy = (4 * cpt + cpt / 2) as i16;
+        let east_cx = (tpr / 2) * cpt; // first east-room cell column
+        let cpr = e.cells_per_row();
+
+        // No door: the boundary occludes sight into the east room.
+        e.compute_fov(&[vx, vy]);
+        assert_eq!(
+            fov_count_in_columns(&e, east_cx, cpr),
+            0,
+            "closed boundary blocks all sight into the east room"
+        );
+
+        // Open the door between tile (3,4) and (4,4): sight crosses there.
+        e.set_door_edge(4 * tpr + 3, 4 * tpr + 4, true);
+        e.compute_fov(&[vx, vy]);
+        assert!(
+            fov_count_in_columns(&e, east_cx, cpr) > 0,
+            "open door lets sight cross into the east room"
+        );
+    }
+
+    #[test]
+    fn fov_multi_viewer_union() {
+        // Two viewers far enough apart that neither alone covers the other. The
+        // single FOV canvas is the union — both viewer cells are lit at once.
+        let mut e = LightingEngine::new(2, 30);
+        e.compute_fov(&[10, 10, 50, 50]);
+        assert!(fov_visible(&e, 10, 10), "viewer A's cell visible");
+        assert!(fov_visible(&e, 50, 50), "viewer B's cell visible");
+        // A cell far from both viewers stays dark (out of range of either).
+        assert!(!fov_visible(&e, 30, 30), "midpoint out of both viewers' range");
+    }
+
+    #[test]
+    fn fov_empty_viewers_is_fully_transparent() {
+        let mut e = LightingEngine::new(2, 30);
+        e.compute_fov(&[]);
+        let canvas = e.fov_canvas().expect("computed");
+        assert!(
+            canvas.iter().all(|c| c.3 == 0),
+            "no viewers → fully transparent canvas"
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use crate::collision::{CollisionDetector, HybridCollisionMap};
 use crate::engine::DEFAULT_ENGINE;
-use crate::{arctan, ray};
+use crate::arctan;
 
 /// Color mode configuration for light sources.
 #[derive(Clone, Debug, PartialEq)]
@@ -100,6 +100,67 @@ pub(crate) fn build_ray_table(max_dist: usize) -> RayTable {
     rays
 }
 
+/// Walk the precomputed ray table outward from `pos`, invoking `visit` for
+/// every cell a ray reaches before it is occluded by the [`HybridCollisionMap`]
+/// (Room + Object collision). Shared by [`Light::update`] (which renders a
+/// coloured pixel per visited cell) and [`crate::engine::LightingEngine::compute_fov`]
+/// (which marks a binary visibility mask).
+///
+/// `visit` receives `(offset, angle, d)`, where `offset` is the visited cell's
+/// position relative to `pos` and `angle`/`d` identify the ray. World (cell)
+/// coords are just `pos + offset`. Distance is capped at `max_dist`; the same
+/// occlusion rules as `Light::update` apply, minus colour and falloff.
+pub(crate) fn trace_visible_cells<F>(
+    pos: PtI,
+    collision: &HybridCollisionMap,
+    rays: &RayTable,
+    max_dist: usize,
+    mut visit: F,
+) where
+    F: FnMut(PtI, usize, u8),
+{
+    let mut blocked_angles = [255u8; ANGLES];
+
+    for d in 0..max_dist {
+        for angle in 0..ANGLES {
+            if blocked_angles[angle] < d as u8 {
+                continue;
+            }
+
+            if let Some(cells) = rays.get(&(d, angle)) {
+                for cell in cells {
+                    if d == 0 && angle % 90 != 0 {
+                        continue;
+                    }
+
+                    let curr = (cell.0 + pos.0, cell.1 + pos.1);
+
+                    // Full-ray occlusion check from the viewer origin to cell.
+                    if collision.is_blocked(pos.0, pos.1, curr.0, curr.1) {
+                        blocked_angles[angle] = d as u8;
+
+                        if d < 3 {
+                            let left_angle = if angle > 0 { angle - 1 } else { ANGLES - 1 };
+                            let right_angle = (angle + 1) % ANGLES;
+
+                            if blocked_angles[left_angle] > d as u8 {
+                                blocked_angles[left_angle] = d as u8;
+                            }
+                            if blocked_angles[right_angle] > d as u8 {
+                                blocked_angles[right_angle] = d as u8;
+                            }
+                        }
+
+                        break;
+                    }
+
+                    visit(*cell, angle, d as u8);
+                }
+            }
+        }
+    }
+}
+
 /// A single point light's per-instance state and render output.
 ///
 /// Owned by [`crate::engine::LightingEngine`]; not constructed directly by
@@ -110,7 +171,6 @@ pub struct Light {
     color_mode: Option<ColorMode>,
     canvas: Vec<Color>,
     canvas_size: usize,
-    blocked_angles: [u8; ANGLES],
 }
 
 impl Light {
@@ -123,7 +183,6 @@ impl Light {
             color_mode,
             canvas: vec![Color::default(); canvas_pixels],
             canvas_size,
-            blocked_angles: [255; ANGLES],
         }
     }
 
@@ -169,52 +228,13 @@ impl Light {
             self.canvas_size = new_canvas_size;
         }
 
-        self.blocked_angles.fill(255);
         self.canvas.iter_mut().for_each(|p| *p = Color::default());
 
-        for d in 0..self.r as usize {
-            if d >= max_dist {
-                break;
-            }
-
-            for angle in 0..ANGLES {
-                if self.blocked_angles[angle] < d as u8 {
-                    continue;
-                }
-
-                if let Some(cells) = rays.get(&(d, angle)) {
-                    for cell in cells {
-                        if d == 0 && angle % 90 != 0 {
-                            continue;
-                        }
-
-                        let curr = (cell.0 + self.pos.0, cell.1 + self.pos.1);
-                        let _prev = ray::step(curr, self.pos);
-
-                        // Full-ray occlusion check from light origin to cell.
-                        if collision.is_blocked(self.pos.0, self.pos.1, curr.0, curr.1) {
-                            self.blocked_angles[angle] = d as u8;
-
-                            if d < 3 {
-                                let left_angle = if angle > 0 { angle - 1 } else { ANGLES - 1 };
-                                let right_angle = (angle + 1) % ANGLES;
-
-                                if self.blocked_angles[left_angle] > d as u8 {
-                                    self.blocked_angles[left_angle] = d as u8;
-                                }
-                                if self.blocked_angles[right_angle] > d as u8 {
-                                    self.blocked_angles[right_angle] = d as u8;
-                                }
-                            }
-
-                            break;
-                        }
-
-                        self.render_light_pixel(*cell, angle, d as u8);
-                    }
-                }
-            }
-        }
+        let pos = self.pos;
+        let effective_max = (self.r as usize).min(max_dist);
+        trace_visible_cells(pos, collision, rays, effective_max, |offset, angle, d| {
+            self.render_light_pixel(offset, angle, d);
+        });
 
         self.canvas.as_ptr()
     }
@@ -249,38 +269,71 @@ impl Light {
     }
 }
 
+/// A full-map RGBA canvas: `size²` cells in row-major order, blitted at origin
+/// `(0,0)` by the JS compositor. Shared storage behind the engine's full-map
+/// effects ([`Ambient`], [`Fov`]); each wraps one and adds its own write
+/// primitive. The persistent allocation keeps the pointer handed to JS valid
+/// between frames.
+struct FullMapCanvas {
+    cells: Vec<Color>,
+    size: usize,
+}
+
+impl FullMapCanvas {
+    /// Allocate a fully-transparent `size²` canvas.
+    fn new(size: usize) -> Self {
+        FullMapCanvas {
+            cells: vec![Color::default(); size * size],
+            size,
+        }
+    }
+
+    fn cells(&self) -> &[Color] {
+        &self.cells
+    }
+
+    /// Reset every cell to transparent.
+    fn clear(&mut self) {
+        self.cells.iter_mut().for_each(|p| *p = Color::default());
+    }
+
+    /// Write `color` to cell `(x, y)`; out-of-bounds writes are ignored.
+    fn set(&mut self, x: i16, y: i16, color: Color) {
+        if x < 0 || y < 0 || x >= self.size as i16 || y >= self.size as i16 {
+            return;
+        }
+        self.cells[x as usize + y as usize * self.size] = color;
+    }
+}
+
 /// A room-bounded flat ambient fill.
 ///
 /// Unlike a [`Light`] (a point source with radial falloff), an `Ambient` has
 /// no radius, intensity, or falloff: every cell of a single same-type tile
 /// **Room** is filled with one flat RGB colour. Alpha is the in-room/out-of-room
-/// mask (`255` inside the room, `0` everywhere else). The canvas is full-map
-/// sized (`cells_per_row²`) so the JS compositor can blit it at origin `(0,0)`.
+/// mask (`255` inside the room, `0` everywhere else).
 ///
 /// Owned by [`crate::engine::LightingEngine`], which floods it via
-/// `update_or_add_ambient`. The persistent allocation keeps the canvas pointer
-/// returned to JS valid between frames.
+/// `update_or_add_ambient`.
 pub struct Ambient {
-    canvas: Vec<Color>,
-    canvas_size: usize,
+    canvas: FullMapCanvas,
 }
 
 impl Ambient {
-    /// Allocate a transparent full-map canvas of `canvas_size² ` cells.
+    /// Allocate a transparent full-map canvas of `canvas_size²` cells.
     pub(crate) fn new(canvas_size: usize) -> Self {
         Ambient {
-            canvas: vec![Color::default(); canvas_size * canvas_size],
-            canvas_size,
+            canvas: FullMapCanvas::new(canvas_size),
         }
     }
 
     pub(crate) fn canvas(&self) -> &[Color] {
-        &self.canvas
+        self.canvas.cells()
     }
 
     /// Reset every cell to transparent.
     pub(crate) fn clear(&mut self) {
-        self.canvas.iter_mut().for_each(|p| *p = Color::default());
+        self.canvas.clear();
     }
 
     /// Fill the `cells_per_tile²` block of cells belonging to tile
@@ -292,15 +345,51 @@ impl Ambient {
         cells_per_tile: usize,
         color: Color,
     ) {
-        let cells_per_row = self.canvas_size;
         let cx0 = tile_x * cells_per_tile;
         let cy0 = tile_y * cells_per_tile;
         for dy in 0..cells_per_tile {
-            let row = (cy0 + dy) * cells_per_row;
             for dx in 0..cells_per_tile {
-                self.canvas[row + cx0 + dx] = color;
+                self.canvas.set((cx0 + dx) as i16, (cy0 + dy) as i16, color);
             }
         }
+    }
+}
+
+/// A full-map binary **FOV canvas**.
+///
+/// Shaped like an [`Ambient`]'s output (full-map, `cells_per_row²` RGBA cells,
+/// blitted at origin `(0,0)`) rather than a [`Light`]'s bounding square. Each
+/// cell is either opaque white `(255, 255, 255, 255)` where some viewer's rays
+/// reach it, or fully transparent `(0, 0, 0, 0)` where none do — binary alpha,
+/// no falloff. Per [ADR-0006](../../docs/adr/0006-fog-of-war-in-renderer.md) the
+/// engine holds no explored/fog state; this is the live mask only, recomputed
+/// from scratch on every [`crate::engine::LightingEngine::compute_fov`] call.
+pub struct Fov {
+    canvas: FullMapCanvas,
+}
+
+impl Fov {
+    /// Allocate a fully-transparent full-map canvas of `canvas_size²` cells.
+    pub(crate) fn new(canvas_size: usize) -> Self {
+        Fov {
+            canvas: FullMapCanvas::new(canvas_size),
+        }
+    }
+
+    pub(crate) fn canvas(&self) -> &[Color] {
+        self.canvas.cells()
+    }
+
+    /// Reset every cell to transparent.
+    pub(crate) fn clear(&mut self) {
+        self.canvas.clear();
+    }
+
+    /// Mark the cell at `(cx, cy)` (world cell coords) as visible — opaque
+    /// white. Out-of-bounds coordinates are ignored. Idempotent, so unioning
+    /// multiple viewers is just repeated marking.
+    pub(crate) fn mark(&mut self, cx: i16, cy: i16) {
+        self.canvas.set(cx, cy, Color(255, 255, 255, 255));
     }
 }
 
