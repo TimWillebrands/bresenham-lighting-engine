@@ -8,8 +8,9 @@
 //!
 //! The engine works by casting rays from light sources at discrete angles and distances,
 //! checking for obstacles along each ray path, and calculating shadows based on
-//! geometric projections. Light falloff is applied based on distance, and colors
-//! are rendered using HSV color space for smooth transitions.
+//! geometric projections. Per ADR-0010 the engine emits **transport masks** only:
+//! white canvases whose alpha encodes radial attenuation. Colour and intensity
+//! are applied renderer-side.
 //!
 //! # Key Features
 //!
@@ -18,7 +19,6 @@
 //! - **Deterministic**: Same inputs always produce identical outputs
 //! - **Portable**: Works on any platform with a CPU
 //! - **Minimalistic**: Small codebase with no heavy dependencies
-//! - **Configurable Colors**: Support for rainbow, solid, and custom HSV colors
 //!
 //! # Architecture
 //!
@@ -38,14 +38,8 @@
 //! // Initialize the engine
 //! init();
 //!
-//! // Add a rainbow light at position (100, 50) with radius 30
-//! const rainbowLight = put(1, 30, 100, 50);
-//!
-//! // Add a red light at position (200, 50) with radius 25
-//! const redLight = put_solid_color(2, 25, 200, 50, 0);
-//!
-//! // Add a desaturated blue light with custom color
-//! const customLight = put_custom_color(3, 20, 150, 100, 170, 128);
+//! // Add a light at position (100, 50) with radius 30 — returns its mask
+//! const lightMask = put(1, 30, 100, 50);
 //!
 //! // Set up some obstacles
 //! set_tile(5, 3, 1);
@@ -60,14 +54,8 @@
 //! // Initialize the lighting system
 //! lighting::init();
 //!
-//! // Create a rainbow light source (default)
+//! // Create a light source — returns a pointer to its transport mask
 //! let canvas_ptr = lighting::update_or_add_light(1, 30, 100, 50);
-//!
-//! // Create a solid color light source
-//! let red_light = lighting::update_or_add_light_with_solid_color(2, 25, 200, 50, 0);
-//!
-//! // Create a custom HSV color light source
-//! let custom_light = lighting::update_or_add_light_with_custom_color(3, 20, 150, 100, 170, 128);
 //! ```
 //!
 //! # Performance Characteristics
@@ -124,11 +112,10 @@ pub fn wasm_memory() -> JsValue {
 }
 
 /// Maximum light radius the engine will honour. Light canvases returned by
-/// `put`, `put_solid_color`, and `put_custom_color` are sized
-/// `(min(r, max_light_radius()) * 2 + 1)²`. JS callers must clamp `r` to this
-/// value (or read the actual canvas side length back) before constructing a
-/// typed-array view over the returned pointer, or they will run off the end
-/// of the canvas allocation.
+/// `put` are sized `(min(r, max_light_radius()) * 2 + 1)²`. JS callers must
+/// clamp `r` to this value (or read the actual canvas side length back)
+/// before constructing a typed-array view over the returned pointer, or they
+/// will run off the end of the canvas allocation.
 #[wasm_bindgen]
 pub fn max_light_radius() -> u16 {
     lighting::max_dist() as u16
@@ -165,7 +152,6 @@ pub fn start() {
 ///
 /// This is the primary interface for managing lights in the scene.
 /// Each light is identified by a unique ID and can be updated independently.
-/// Uses the default rainbow color mode for backward compatibility.
 ///
 /// # Arguments
 /// * `id` - Unique identifier for this light (0-255)
@@ -174,90 +160,31 @@ pub fn start() {
 /// * `y` - World Y coordinate of the light center
 ///
 /// # Returns
-/// A pointer to the light's rendered canvas data (RGBA pixel array).
-/// The canvas size is determined by the light's radius and contains
-/// pre-rendered lighting information that can be blitted to a framebuffer.
-///
-/// Returns null pointer if the operation fails (e.g., due to thread contention).
+/// A pointer to the light's transport mask (RGBA pixel array): white pixels
+/// with alpha = radial attenuation (ADR-0010). Colour/intensity are applied
+/// by the renderer. Returns null pointer if the operation fails.
 ///
 /// # Canvas Format
 ///
 /// The returned canvas is a square array of RGBA pixels where:
 /// - Size: (radius * 2 + 1)² pixels
-/// - Format: 4 bytes per pixel (R, G, B, A)
+/// - Format: 4 bytes per pixel (R, G, B, A) — RGB always 255. Alpha alone
+///   carries signal; RGBA (not A8) because JS feeds the buffer straight to
+///   `ImageData`/`putImageData`.
 /// - Origin: Center of the array represents the light's position
-/// - Colors: HSV-based with hue determined by ray angle
-///
-/// # Thread Safety
-///
-/// This function is thread-safe and can be called concurrently from
-/// multiple threads to update different lights simultaneously.
 ///
 /// # Example Usage (JavaScript)
 ///
 /// ```javascript
-/// // Create a rainbow light with radius 50 at position (200, 100)
-/// const lightCanvas = put(0, 50, 200, 100);
+/// // Create a light with radius 50 at position (200, 100)
+/// const lightMask = put(0, 50, 200, 100);
 ///
 /// // Later, move the same light to a new position
-/// const updatedCanvas = put(0, 50, 250, 150);
+/// const updatedMask = put(0, 50, 250, 150);
 /// ```
 #[wasm_bindgen]
 pub fn put(id: u8, r: i16, x: i16, y: i16) -> *const lighting::Color {
     lighting::update_or_add_light(id, r, x, y)
-}
-
-/// Updates an existing light or creates a new one with a solid color.
-///
-/// # Arguments
-/// * `id` - Unique identifier for this light (0-255)
-/// * `r` - Light radius/range in world units
-/// * `x` - World X coordinate of the light center
-/// * `y` - World Y coordinate of the light center
-/// * `hue` - Color hue (0-255, representing 0-360°)
-///
-/// # Returns
-/// A pointer to the light's rendered canvas data (RGBA pixel array).
-///
-/// # Example Usage (JavaScript)
-///
-/// ```javascript
-/// // Create a red light (hue=0) with radius 50 at position (200, 100)
-/// const lightCanvas = put_solid_color(0, 50, 200, 100, 0);
-///
-/// // Create a green light (hue=85) with radius 30 at position (150, 200)
-/// const greenLight = put_solid_color(1, 30, 150, 200, 85);
-/// ```
-#[wasm_bindgen]
-pub fn put_solid_color(id: u8, r: i16, x: i16, y: i16, hue: u8) -> *const lighting::Color {
-    lighting::update_or_add_light_with_solid_color(id, r, x, y, hue)
-}
-
-/// Updates an existing light or creates a new one with custom HSV color.
-///
-/// # Arguments
-/// * `id` - Unique identifier for this light (0-255)
-/// * `r` - Light radius/range in world units
-/// * `x` - World X coordinate of the light center
-/// * `y` - World Y coordinate of the light center
-/// * `hue` - Color hue (0-255, representing 0-360°)
-/// * `saturation` - Color saturation (0-255, 0=grayscale, 255=full color)
-///
-/// # Returns
-/// A pointer to the light's rendered canvas data (RGBA pixel array).
-///
-/// # Example Usage (JavaScript)
-///
-/// ```javascript
-/// // Create a desaturated blue light
-/// const lightCanvas = put_custom_color(0, 50, 200, 100, 170, 128);
-///
-/// // Create a bright cyan light  
-/// const cyanLight = put_custom_color(1, 30, 150, 200, 128, 255);
-/// ```
-#[wasm_bindgen]
-pub fn put_custom_color(id: u8, r: i16, x: i16, y: i16, hue: u8, saturation: u8) -> *const lighting::Color {
-    lighting::update_or_add_light_with_custom_color(id, r, x, y, hue, saturation)
 }
 
 /// Returns a pointer to the world's tile data array.
@@ -584,40 +511,20 @@ impl WasmLightingEngine {
         self.inner.tile_find(tile_idx)
     }
 
-    /// Create or update a rainbow light. Returns a pointer to the rendered
-    /// canvas (RGBA, `(r*2+1)²` pixels) in wasm linear memory.
+    /// Create or update a light. Returns a pointer to its transport mask
+    /// (RGBA, `(r*2+1)²` pixels, white with alpha = attenuation, ADR-0010)
+    /// in wasm linear memory.
     pub fn put(&mut self, id: u8, r: i16, x: i16, y: i16) -> *const lighting::Color {
         self.inner.update_or_add_light(id, r, x, y)
     }
 
-    /// Create or update a solid-color light.
-    pub fn put_solid_color(
-        &mut self,
-        id: u8,
-        r: i16,
-        x: i16,
-        y: i16,
-        hue: u8,
-    ) -> *const lighting::Color {
-        self.inner.update_or_add_light_with_solid_color(id, r, x, y, hue)
-    }
-
     /// Create or update a room-bounded ambient emitter. Floods the same-type
-    /// `UnionFind` room of tile `(tile_x, tile_y)` with a flat `(r, g, b)`,
-    /// returning a pointer to its full-map canvas (`cells_per_row²` RGBA cells).
-    /// Mirrors `put_solid_color` but preserves authored RGB (no hue/saturation
-    /// lossiness) and is room-bounded rather than radial. A non-floor tile
-    /// (`tile <= 0`) yields an empty canvas. See ADR-0004.
-    pub fn put_ambient(
-        &mut self,
-        id: u8,
-        tile_x: i16,
-        tile_y: i16,
-        r: u8,
-        g: u8,
-        b: u8,
-    ) -> *const lighting::Color {
-        self.inner.update_or_add_ambient(id, tile_x, tile_y, r, g, b)
+    /// `UnionFind` room of tile `(tile_x, tile_y)` with opaque white,
+    /// returning a pointer to its full-map mask (`cells_per_row²` RGBA cells).
+    /// Room-bounded rather than radial; colour is renderer-side (ADR-0010).
+    /// A non-floor tile (`tile <= 0`) yields an empty canvas. See ADR-0004.
+    pub fn put_ambient(&mut self, id: u8, tile_x: i16, tile_y: i16) -> *const lighting::Color {
+        self.inner.update_or_add_ambient(id, tile_x, tile_y)
     }
 
     /// Compute the live field-of-view mask for a flat array of viewer points in

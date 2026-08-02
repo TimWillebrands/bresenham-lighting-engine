@@ -19,15 +19,6 @@ use crate::collision::{CollisionDetector, HybridCollisionMap};
 use crate::engine::DEFAULT_ENGINE;
 use crate::arctan;
 
-/// Color mode configuration for light sources.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ColorMode {
-    /// Solid color using specified hue (0-255).
-    Solid(u8),
-    /// Custom HSV color with specified hue and saturation.
-    Custom { hue: u8, saturation: u8 },
-}
-
 /// Maximum ray distance from a light's centre, in cells.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) const MAX_DIST: usize = 10;
@@ -161,26 +152,25 @@ pub(crate) fn trace_visible_cells<F>(
     }
 }
 
-/// A single point light's per-instance state and render output.
+/// A single point light's per-instance transport state and mask output.
 ///
-/// Owned by [`crate::engine::LightingEngine`]; not constructed directly by
-/// callers.
+/// Per ADR-0010 the engine emits **transport only**: the canvas is a white
+/// radial-falloff mask (alpha = attenuation). Colour/intensity are renderer
+/// concerns. Owned by [`crate::engine::LightingEngine`].
 pub struct Light {
     pos: PtI,
     r: i16,
-    color_mode: Option<ColorMode>,
     canvas: Vec<Color>,
     canvas_size: usize,
 }
 
 impl Light {
-    pub(crate) fn new(pos: PtI, r: i16, color_mode: Option<ColorMode>) -> Self {
+    pub(crate) fn new(pos: PtI, r: i16) -> Self {
         let canvas_size = (r * 2 + 1) as usize;
         let canvas_pixels = canvas_size * canvas_size;
         Light {
             pos,
             r,
-            color_mode,
             canvas: vec![Color::default(); canvas_pixels],
             canvas_size,
         }
@@ -194,10 +184,6 @@ impl Light {
         self.r
     }
 
-    pub(crate) fn color_mode(&self) -> &Option<ColorMode> {
-        &self.color_mode
-    }
-
     pub(crate) fn canvas(&self) -> &[Color] {
         &self.canvas
     }
@@ -206,10 +192,8 @@ impl Light {
         self.canvas_size
     }
 
-    pub(crate) fn set_state(&mut self, pos: PtI, r: i16, color_mode: Option<ColorMode>) {
+    pub(crate) fn set_pos(&mut self, pos: PtI) {
         self.pos = pos;
-        self.r = r;
-        self.color_mode = color_mode;
     }
 
     /// Recalculate this light's canvas, consulting `collision` for occlusion
@@ -232,14 +216,14 @@ impl Light {
 
         let pos = self.pos;
         let effective_max = (self.r as usize).min(max_dist);
-        trace_visible_cells(pos, collision, rays, effective_max, |offset, angle, d| {
-            self.render_light_pixel(offset, angle, d);
+        trace_visible_cells(pos, collision, rays, effective_max, |offset, _angle, d| {
+            self.render_light_pixel(offset, d);
         });
 
         self.canvas.as_ptr()
     }
 
-    fn render_light_pixel(&mut self, cell: PtI, angle: usize, distance: u8) {
+    fn render_light_pixel(&mut self, cell: PtI, distance: u8) {
         let c = (
             cell.0 + self.canvas_size as i16 / 2,
             cell.1 + self.canvas_size as i16 / 2,
@@ -253,18 +237,9 @@ impl Light {
         let falloff = 255 - (255 * distance as u16) / (self.r as u16);
 
         if cell_idx < self.canvas.len() {
-            let color = match &self.color_mode {
-                None => {
-                    let scaled_hue = (angle * 255) / (ANGLES - 1);
-                    hsv2rgb(scaled_hue as u8, 255, falloff as u8)
-                }
-                Some(ColorMode::Solid(hue)) => hsv2rgb(*hue, 255, falloff as u8),
-                Some(ColorMode::Custom { hue, saturation }) => {
-                    hsv2rgb(*hue, *saturation, falloff as u8)
-                }
-            };
-
-            self.canvas[cell_idx] = color;
+            // Raw linear attenuation — the falloff *curve* is a renderer-side
+            // option (`<lighting><falloff>`, ADR-0010): shaping happens there.
+            self.canvas[cell_idx] = Color(255, 255, 255, falloff as u8);
         }
     }
 }
@@ -306,12 +281,12 @@ impl FullMapCanvas {
     }
 }
 
-/// A room-bounded flat ambient fill.
+/// A room-bounded flat ambient fill mask.
 ///
 /// Unlike a [`Light`] (a point source with radial falloff), an `Ambient` has
-/// no radius, intensity, or falloff: every cell of a single same-type tile
-/// **Room** is filled with one flat RGB colour. Alpha is the in-room/out-of-room
-/// mask (`255` inside the room, `0` everywhere else).
+/// no radius or falloff: every cell of a single same-type tile **Room** is
+/// opaque white; everything else transparent. Colour is a renderer concern
+/// (ADR-0010) — alpha is the in-room/out-of-room mask.
 ///
 /// Owned by [`crate::engine::LightingEngine`], which floods it via
 /// `update_or_add_ambient`.
@@ -336,20 +311,15 @@ impl Ambient {
         self.canvas.clear();
     }
 
-    /// Fill the `cells_per_tile²` block of cells belonging to tile
-    /// `(tile_x, tile_y)` with `color`.
-    pub(crate) fn fill_tile(
-        &mut self,
-        tile_x: usize,
-        tile_y: usize,
-        cells_per_tile: usize,
-        color: Color,
-    ) {
+    /// Mark the `cells_per_tile²` block of cells belonging to tile
+    /// `(tile_x, tile_y)` as in-room (opaque white).
+    pub(crate) fn fill_tile(&mut self, tile_x: usize, tile_y: usize, cells_per_tile: usize) {
         let cx0 = tile_x * cells_per_tile;
         let cy0 = tile_y * cells_per_tile;
         for dy in 0..cells_per_tile {
             for dx in 0..cells_per_tile {
-                self.canvas.set((cx0 + dx) as i16, (cy0 + dy) as i16, color);
+                self.canvas
+                    .set((cx0 + dx) as i16, (cy0 + dy) as i16, Color(255, 255, 255, 255));
             }
         }
     }
@@ -393,29 +363,6 @@ impl Fov {
     }
 }
 
-/// HSV-to-RGB conversion. Alpha is always 255.
-pub(crate) fn hsv2rgb(h: u8, s: u8, v: u8) -> Color {
-    if s == 0 {
-        return Color(v, v, v, 255);
-    }
-
-    let sector = h / 43;
-    let remainder = (h - (sector * 43)) * 6;
-
-    let p = (v as u16 * (255 - s) as u16 / 255) as u8;
-    let q = (v as u16 * (255 - (s as u16 * remainder as u16 / 255)) / 255) as u8;
-    let t = (v as u16 * (255 - (s as u16 * (255 - remainder) as u16 / 255)) / 255) as u8;
-
-    match sector {
-        0 => Color(v, t, p, 255),
-        1 => Color(q, v, p, 255),
-        2 => Color(p, v, t, 255),
-        3 => Color(p, q, v, 255),
-        4 => Color(t, p, v, 255),
-        _ => Color(v, p, q, 255),
-    }
-}
-
 // ------------------------------- shims ----------------------------------
 
 /// WASM/back-compat shim. Forwards to [`crate::engine::DEFAULT_ENGINE`].
@@ -423,35 +370,6 @@ pub fn update_or_add_light(id: u8, r: i16, x: i16, y: i16) -> *const Color {
     DEFAULT_ENGINE
         .write()
         .map(|mut e| e.update_or_add_light(id, r, x, y))
-        .unwrap_or(std::ptr::null())
-}
-
-/// WASM/back-compat shim. Forwards to [`crate::engine::DEFAULT_ENGINE`].
-pub fn update_or_add_light_with_solid_color(
-    id: u8,
-    r: i16,
-    x: i16,
-    y: i16,
-    hue: u8,
-) -> *const Color {
-    DEFAULT_ENGINE
-        .write()
-        .map(|mut e| e.update_or_add_light_with_solid_color(id, r, x, y, hue))
-        .unwrap_or(std::ptr::null())
-}
-
-/// WASM/back-compat shim. Forwards to [`crate::engine::DEFAULT_ENGINE`].
-pub fn update_or_add_light_with_custom_color(
-    id: u8,
-    r: i16,
-    x: i16,
-    y: i16,
-    hue: u8,
-    saturation: u8,
-) -> *const Color {
-    DEFAULT_ENGINE
-        .write()
-        .map(|mut e| e.update_or_add_light_with_custom_color(id, r, x, y, hue, saturation))
         .unwrap_or(std::ptr::null())
 }
 

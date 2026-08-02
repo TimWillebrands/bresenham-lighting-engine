@@ -3,6 +3,24 @@
 All notable changes to `bresenham-lighting-engine` are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 2026-08-01
+
+### Changed (breaking)
+
+- **The engine emits transport masks only** (ADR-0010, main repo issue #110).
+  `put` now returns a white radial-falloff mask — RGB always 255, alpha =
+  linear attenuation (curve shaping is renderer-side) — and `put_ambient`
+  lost its `r`/`g`/`b`
+  parameters, returning an opaque-white room-fill mask. Colour and intensity
+  are applied renderer-side (`tint` × mask).
+
+### Removed
+
+- `ColorMode` (`Solid`/`Custom`/`Rgb`), `hsv2rgb`, and every colour-carrying
+  light API: `put_solid_color`, `put_custom_color`, `put_rgb` and their
+  `update_or_add_light_with_*` counterparts. There is no colour path left in
+  the engine to collapse (#72 fixed by construction).
+
 ## [Unreleased] — 2026-05-25
 
 ### Added

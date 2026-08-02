@@ -30,7 +30,7 @@ use once_cell::sync::Lazy;
 use crate::block_map::{compute_cell_details_for_tile, CellDetails};
 use crate::collision::HybridCollisionMap;
 use crate::lighting::{
-    build_ray_table, trace_visible_cells, Ambient, Color, ColorMode, Fov, Light, RayTable,
+    build_ray_table, trace_visible_cells, Ambient, Color, Fov, Light, RayTable,
 };
 use crate::map_grid::UnionFind;
 
@@ -250,67 +250,43 @@ impl LightingEngine {
         self.collision.clear();
     }
 
-    /// Create or update a rainbow light. Returns a pointer to the rendered
-    /// canvas (used by the WASM shim). Rust callers should prefer
-    /// [`Self::light_canvas`] after this call.
+    /// Create or update a light and return a pointer to its transport mask —
+    /// a white radial-falloff canvas (alpha = attenuation, ADR-0010). Rust
+    /// callers should prefer [`Self::light_canvas`] after this call.
     pub fn update_or_add_light(&mut self, id: u8, r: i16, x: i16, y: i16) -> *const Color {
-        self.update_light_with_color_mode(id, r, x, y, None)
-    }
+        let clamped_r = r.min(self.max_dist as i16).max(1);
 
-    /// Create or update a solid-color light.
-    pub fn update_or_add_light_with_solid_color(
-        &mut self,
-        id: u8,
-        r: i16,
-        x: i16,
-        y: i16,
-        hue: u8,
-    ) -> *const Color {
-        self.update_light_with_color_mode(id, r, x, y, Some(ColorMode::Solid(hue)))
-    }
-
-    /// Create or update a custom-HSV light.
-    pub fn update_or_add_light_with_custom_color(
-        &mut self,
-        id: u8,
-        r: i16,
-        x: i16,
-        y: i16,
-        hue: u8,
-        saturation: u8,
-    ) -> *const Color {
-        self.update_light_with_color_mode(
-            id,
-            r,
-            x,
-            y,
-            Some(ColorMode::Custom { hue, saturation }),
-        )
+        // Disjoint borrows: `lights` mutably, `collision`+`all_rays` immutably.
+        let collision = &self.collision;
+        let all_rays = &self.all_rays;
+        let max_dist = self.max_dist;
+        let light = self
+            .lights
+            .entry(id)
+            .or_insert_with(|| Light::new((x, y), clamped_r));
+        if light.radius() != clamped_r {
+            // Radius change resizes the canvas — rebuild.
+            *light = Light::new((x, y), clamped_r);
+        } else {
+            light.set_pos((x, y));
+        }
+        light.update(collision, all_rays, max_dist)
     }
 
     /// Create or update a room-bounded ambient emitter and return a pointer to
-    /// its full-map canvas (`cells_per_row²` RGBA cells in wasm linear memory).
+    /// its full-map mask (`cells_per_row²` RGBA cells in wasm linear memory).
     ///
     /// The emitter floods the same-type [`UnionFind`] room of the tile at
     /// `(tile_x, tile_y)` — every cell of every tile sharing that tile's room
-    /// is filled with `Color(r, g, b, 255)`; everything else stays transparent
-    /// `(0, 0, 0, 0)`. Because the room is the `tile_uf` partition (which is
-    /// door-agnostic, per ADR-0003), the fill never crosses a Door, open or
-    /// closed. An emitter on a non-floor tile (`tile <= 0`) or out of range
-    /// emits an empty (fully transparent) canvas.
-    pub fn update_or_add_ambient(
-        &mut self,
-        id: u8,
-        tile_x: i16,
-        tile_y: i16,
-        r: u8,
-        g: u8,
-        b: u8,
-    ) -> *const Color {
+    /// is opaque white; everything else stays transparent `(0, 0, 0, 0)`.
+    /// Colour is applied renderer-side (ADR-0010). Because the room is the
+    /// `tile_uf` partition (which is door-agnostic, per ADR-0003), the fill
+    /// never crosses a Door, open or closed. An emitter on a non-floor tile
+    /// (`tile <= 0`) or out of range emits an empty (fully transparent) canvas.
+    pub fn update_or_add_ambient(&mut self, id: u8, tile_x: i16, tile_y: i16) -> *const Color {
         let tiles_per_row = self.tiles_per_row;
         let cells_per_tile = self.cells_per_tile;
         let cells_per_row = self.cells_per_row();
-        let color = Color(r, g, b, 255);
 
         // Resolve the emitter tile's room first (needs `&mut tile_uf` for
         // find()), then collect every tile in that room. Done before borrowing
@@ -338,12 +314,7 @@ impl LightingEngine {
             .or_insert_with(|| Ambient::new(cells_per_row));
         ambient.clear();
         for &ti in &room_tiles {
-            ambient.fill_tile(
-                ti % tiles_per_row,
-                ti / tiles_per_row,
-                cells_per_tile,
-                color,
-            );
+            ambient.fill_tile(ti % tiles_per_row, ti / tiles_per_row, cells_per_tile);
         }
         ambient.canvas().as_ptr()
     }
@@ -414,37 +385,6 @@ impl LightingEngine {
     /// Light radius in cells.
     pub fn light_radius(&self, id: u8) -> Option<i16> {
         self.lights.get(&id).map(|l| l.radius())
-    }
-
-    fn update_light_with_color_mode(
-        &mut self,
-        id: u8,
-        r: i16,
-        x: i16,
-        y: i16,
-        color_mode: Option<ColorMode>,
-    ) -> *const Color {
-        let clamped_r = r.min(self.max_dist as i16).max(1);
-
-        let needs_new = match self.lights.get(&id) {
-            Some(existing) => existing.radius() != clamped_r || existing.color_mode() != &color_mode,
-            None => true,
-        };
-        if needs_new {
-            self.lights
-                .insert(id, Light::new((x, y), clamped_r, color_mode.clone()));
-        }
-
-        // Disjoint borrows: `lights` mutably, `collision`+`all_rays` immutably.
-        let collision = &self.collision;
-        let all_rays = &self.all_rays;
-        let max_dist = self.max_dist;
-        let light = self
-            .lights
-            .get_mut(&id)
-            .expect("just inserted or known to exist");
-        light.set_state((x, y), clamped_r, color_mode);
-        light.update(collision, all_rays, max_dist)
     }
 
     fn recompute_block_map(&mut self) {
@@ -765,7 +705,8 @@ impl LightingEngine {
         for row in 0..size {
             for col in 0..size {
                 let pixel = canvas[row * size + col];
-                let brightness = pixel.0.max(pixel.1).max(pixel.2);
+                // Transport mask: attenuation lives in alpha (ADR-0010).
+                let brightness = pixel.3;
                 let idx = (brightness as usize * (ASCII_GRADIENT.len() - 1)) / 255;
                 out.push(ASCII_GRADIENT[idx] as char);
             }
@@ -820,6 +761,20 @@ mod tests {
             "center {:?} (idx {}) should be at least as bright as corner {:?} (idx {}). Canvas:\n{}",
             center, center_idx, corner, corner_idx, s
         );
+    }
+
+    #[test]
+    fn light_emits_white_mask_with_falloff_alpha() {
+        // ADR-0010: transport only — white pixels, attenuation in alpha,
+        // full-strength at the centre, dimmer toward the rim.
+        let mut e = LightingEngine::new(6, 30);
+        e.update_or_add_light(1, 3, 5, 5);
+        let canvas = e.light_canvas(1).expect("light exists");
+        let centre = canvas[3 + 3 * 7]; // centre of the radius-3 light's 7×7 canvas
+        assert_eq!((centre.0, centre.1, centre.2, centre.3), (255, 255, 255, 255));
+        let rim = canvas[3 + 1 * 7]; // two cells up from centre
+        assert_eq!((rim.0, rim.1, rim.2), (255, 255, 255), "mask stays white");
+        assert!(rim.3 > 0 && rim.3 < 255, "rim alpha attenuated, got {}", rim.3);
     }
 
     #[test]
@@ -1072,13 +1027,13 @@ mod tests {
         e.set_tile_map(tiles);
 
         // Emitter in the west room (tile (1,1)).
-        e.update_or_add_ambient(0, 1, 1, 140, 130, 120);
+        e.update_or_add_ambient(0, 1, 1);
 
-        // West-room cells are filled with the authored colour...
+        // West-room cells are opaque white (mask; colour is renderer-side)...
         let cpr = e.cells_per_row();
         let cpt = e.cells_per_tile();
         let west = e.ambient_canvas(0).unwrap()[(1 * cpt + 1) * cpr + (1 * cpt + 1)];
-        assert_eq!((west.0, west.1, west.2, west.3), (140, 130, 120, 255));
+        assert_eq!((west.0, west.1, west.2, west.3), (255, 255, 255, 255));
         assert!(ambient_cell_opaque(&e, 0, 0, 0), "same-room tile filled");
 
         // ...east-room cells (x>=3) stay transparent.
@@ -1104,13 +1059,13 @@ mod tests {
         e.set_tile_map(tiles);
 
         // Closed door: east room dark.
-        e.update_or_add_ambient(0, 1, 1, 100, 100, 100);
+        e.update_or_add_ambient(0, 1, 1);
         assert!(ambient_cell_opaque(&e, 0, 1, 1), "west room filled");
         assert!(!ambient_cell_opaque(&e, 0, 3, 1), "closed door: east dark");
 
         // Open the door between (1,1) and (2,1); re-flood. Still east dark.
         e.set_door_edge(1 * 5 + 1, 1 * 5 + 2, true);
-        e.update_or_add_ambient(0, 1, 1, 100, 100, 100);
+        e.update_or_add_ambient(0, 1, 1);
         assert!(ambient_cell_opaque(&e, 0, 1, 1), "west room still filled");
         assert!(
             !ambient_cell_opaque(&e, 0, 3, 1),
@@ -1126,7 +1081,7 @@ mod tests {
         tiles[1 * 5 + 1] = 0;
         e.set_tile_map(tiles);
 
-        e.update_or_add_ambient(0, 1, 1, 200, 50, 50);
+        e.update_or_add_ambient(0, 1, 1);
         let canvas = e.ambient_canvas(0).unwrap();
         assert!(
             canvas.iter().all(|c| c.3 == 0),
@@ -1138,7 +1093,7 @@ mod tests {
     fn ambient_out_of_range_is_empty() {
         let mut e = LightingEngine::new(2, 5);
         e.set_tile_map(vec![1u8; 25]);
-        e.update_or_add_ambient(0, -1, 99, 10, 20, 30);
+        e.update_or_add_ambient(0, -1, 99);
         let canvas = e.ambient_canvas(0).unwrap();
         assert!(canvas.iter().all(|c| c.3 == 0), "out-of-range → empty canvas");
     }
@@ -1153,8 +1108,8 @@ mod tests {
         }
         e.set_tile_map(tiles);
 
-        e.update_or_add_ambient(0, 1, 1, 100, 0, 0); // west
-        e.update_or_add_ambient(1, 3, 1, 0, 0, 100); // east
+        e.update_or_add_ambient(0, 1, 1); // west
+        e.update_or_add_ambient(1, 3, 1); // east
 
         assert!(ambient_cell_opaque(&e, 0, 1, 1) && !ambient_cell_opaque(&e, 0, 3, 1));
         assert!(ambient_cell_opaque(&e, 1, 3, 1) && !ambient_cell_opaque(&e, 1, 1, 1));
@@ -1166,14 +1121,14 @@ mod tests {
         // the room (and re-flooding) leaves only the emitter's half lit.
         let mut e = LightingEngine::new(2, 5);
         e.set_tile_map(vec![1u8; 25]);
-        e.update_or_add_ambient(0, 0, 1, 80, 80, 80);
+        e.update_or_add_ambient(0, 0, 1);
         assert!(ambient_cell_opaque(&e, 0, 4, 1), "single room: far tile lit");
 
         // Split with a wall column at x=2.
         for y in 0..5 {
             e.set_tile(2, y as u32, 0);
         }
-        e.update_or_add_ambient(0, 0, 1, 80, 80, 80);
+        e.update_or_add_ambient(0, 0, 1);
         assert!(ambient_cell_opaque(&e, 0, 0, 1), "emitter half stays lit");
         assert!(!ambient_cell_opaque(&e, 0, 4, 1), "far half now dark after split");
     }

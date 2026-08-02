@@ -5,7 +5,7 @@
 //!      `LAYER_SIZE=30 + 2*ENGINE_BUFFER_TILES`.
 //!   2. Bulk-set ~900 tiles with `set_tile` one at a time (the path
 //!      `onTilesChanged` walks for each `insert` entry in the Yjs delta).
-//!   3. Place one solid-color light and call `put_solid_color`.
+//!   3. Place one light and call `put`.
 //!   4. Open/close 50 door edges, each of which triggers
 //!      `refresh_collision_from_tiles` + `refresh_tile_uf_from_tiles`.
 //!
@@ -36,7 +36,7 @@ fn main() {
     // Phase 1: construct.
     let t = Instant::now();
     let mut engine = LightingEngine::new(CELLS_PER_TILE, tiles_per_row);
-    println!("[1] LightingEngine::new ............ {:?}", t.elapsed());
+    println!("[1] LightingEngine::new ............. {:?}", t.elapsed());
 
     // Phase 2: simulate `onTilesChanged` walking a freshly-loaded Yjs delta
     // one tile at a time. Real maps have a mix of wall (0) and room (1+)
@@ -78,8 +78,8 @@ fn main() {
     let cx = (tiles_per_row * CELLS_PER_TILE / 2) as i16;
     let cy = cx;
     let t = Instant::now();
-    let _ptr = engine.update_or_add_light_with_solid_color(0, 30, cx, cy, 0);
-    println!("[3] put_solid_color (r=30, centre) .. {:?}", t.elapsed());
+    let _ptr = engine.update_or_add_light(0, 30, cx, cy);
+    println!("[3] put (r=30, centre) .............. {:?}", t.elapsed());
 
     // Phase 4: door churn. Pick 50 adjacent tile pairs and toggle each open
     // then closed — the path the JS facade walks when door tokens change.
@@ -108,6 +108,6 @@ fn main() {
     // Phase 5: re-render the light after door churn (mirrors a frame where
     // the lighting system runs after a door toggle invalidated the engine).
     let t = Instant::now();
-    let _ptr = engine.update_or_add_light_with_solid_color(0, 30, cx, cy, 0);
-    println!("[5] put_solid_color after doors ..... {:?}", t.elapsed());
+    let _ptr = engine.update_or_add_light(0, 30, cx, cy);
+    println!("[5] put after doors ................. {:?}", t.elapsed());
 }
