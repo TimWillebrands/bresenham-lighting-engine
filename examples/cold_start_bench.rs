@@ -18,7 +18,7 @@
 
 use std::time::Instant;
 
-use bresenham_lighting_engine::engine::LightingEngine;
+use bresenham_lighting_engine::engine::{LightingEngine, EDGE_LIGHT, EDGE_MOVE};
 
 const LAYER_SIZE: usize = 30;
 const ENGINE_BUFFER_TILES: usize = 1;
@@ -95,15 +95,15 @@ fn main() {
 
     let t = Instant::now();
     for (a, b) in &door_pairs {
-        engine.set_door_edge(*a, *b, true);
+        engine.set_edge(*a, *b, EDGE_LIGHT | EDGE_MOVE);
     }
-    println!("[4a] set_door_edge × 50 (open) ...... {:?}", t.elapsed());
+    println!("[4a] set_edge × 50 (open) ........... {:?}", t.elapsed());
 
     let t = Instant::now();
     for (a, b) in &door_pairs {
-        engine.set_door_edge(*a, *b, false);
+        engine.set_edge(*a, *b, 0);
     }
-    println!("[4b] set_door_edge × 50 (close) ..... {:?}", t.elapsed());
+    println!("[4b] set_edge × 50 (close) .......... {:?}", t.elapsed());
 
     // Phase 5: re-render the light after door churn (mirrors a frame where
     // the lighting system runs after a door toggle invalidated the engine).

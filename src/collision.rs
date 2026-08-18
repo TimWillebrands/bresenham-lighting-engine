@@ -15,7 +15,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
-use crate::engine::DEFAULT_ENGINE;
+use crate::engine::{canonical_edge, DEFAULT_ENGINE};
 use crate::map_grid::UnionFind;
 
 /// Unified interface for collision detection backends. Kept as a trait so
@@ -153,10 +153,13 @@ pub struct HybridCollisionMap {
     map_size: usize,
     /// Canonical `(lo, hi)` cell-index pairs where the broad-phase walk is
     /// allowed to step between two cells that the union-find considers to be
-    /// in different rooms. Populated by the engine from its `door_edges`
-    /// overlay — a door dissolves the wall only along its own cell-edges, not
-    /// across the entire room boundary (which is what a UF union would do).
-    door_cell_edges: HashSet<(usize, usize)>,
+    /// in different rooms. Populated by the engine from its edge overrides —
+    /// a door dissolves the wall only along its own cell-edges, not across
+    /// the entire room boundary (which is what a UF union would do).
+    pass_cell_edges: HashSet<(usize, usize)>,
+    /// Inverse of `pass_cell_edges`: cell-pairs the walk may NOT step across
+    /// even within one room (a closed door sealing a same-room edge).
+    block_cell_edges: HashSet<(usize, usize)>,
 }
 
 impl HybridCollisionMap {
@@ -166,7 +169,8 @@ impl HybridCollisionMap {
             union_find: Arc::new(RwLock::new(uf)),
             pixel_map: PixelCollisionMap::new(map_size as u16, map_size as u16),
             map_size,
-            door_cell_edges: HashSet::new(),
+            pass_cell_edges: HashSet::new(),
+            block_cell_edges: HashSet::new(),
         }
     }
 
@@ -181,11 +185,16 @@ impl HybridCollisionMap {
         &mut self.pixel_map
     }
 
-    /// Replace the set of open door cell-edges. Each entry is a canonical
-    /// `(lo, hi)` cell-index pair flagging "the broad-phase walk may step
-    /// across these two cells even though they are in different rooms".
-    pub fn set_door_cell_edges(&mut self, edges: HashSet<(usize, usize)>) {
-        self.door_cell_edges = edges;
+    /// Replace both cell-edge override sets (canonical `(lo, hi)` pairs).
+    /// `pass`: the broad-phase walk may step across despite a room boundary.
+    /// `block`: it may not, despite sharing a room.
+    pub fn set_edge_cell_overrides(
+        &mut self,
+        pass: HashSet<(usize, usize)>,
+        block: HashSet<(usize, usize)>,
+    ) {
+        self.pass_cell_edges = pass;
+        self.block_cell_edges = block;
     }
 
     pub fn pixel_map(&self) -> &PixelCollisionMap {
@@ -230,14 +239,18 @@ impl CollisionDetector for HybridCollisionMap {
                     let next_idx = (py * size + px) as usize;
                     let next_room = uf.find(next_idx);
                     if next_room != current_room {
-                        let pair = if prev_idx <= next_idx {
-                            (prev_idx, next_idx)
-                        } else {
-                            (next_idx, prev_idx)
-                        };
-                        if !self.door_cell_edges.contains(&pair) {
+                        if !self
+                            .pass_cell_edges
+                            .contains(&canonical_edge(prev_idx, next_idx))
+                        {
                             return true;
                         }
+                    } else if !self.block_cell_edges.is_empty()
+                        && self
+                            .block_cell_edges
+                            .contains(&canonical_edge(prev_idx, next_idx))
+                    {
+                        return true;
                     }
                     current_idx = next_idx;
                     current_room = next_room;
@@ -252,7 +265,8 @@ impl CollisionDetector for HybridCollisionMap {
             *uf = UnionFind::new(vec![0; self.map_size * self.map_size], self.map_size);
         }
         self.pixel_map.clear();
-        self.door_cell_edges.clear();
+        self.pass_cell_edges.clear();
+        self.block_cell_edges.clear();
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

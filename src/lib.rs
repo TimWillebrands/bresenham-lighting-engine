@@ -121,6 +121,18 @@ pub fn max_light_radius() -> u16 {
     lighting::max_dist() as u16
 }
 
+/// `replace_edges` mask bit: light rays and line-of-sight cross the edge.
+#[wasm_bindgen]
+pub fn edge_light() -> u8 {
+    engine::EDGE_LIGHT
+}
+
+/// `replace_edges` mask bit: pathfinding crosses the edge.
+#[wasm_bindgen]
+pub fn edge_move() -> u8 {
+    engine::EDGE_MOVE
+}
+
 /// Initializes the lighting engine.
 ///
 /// This function must be called before any other lighting operations.
@@ -471,16 +483,11 @@ impl WasmLightingEngine {
         self.inner.clear_pixel_collisions();
     }
 
-    /// Record (or remove) a door edge between two tiles. Open doors join
-    /// the two tiles' rooms for both pathfinding and lighting (per ADR-0003).
-    pub fn set_door_edge(&mut self, t1_idx: usize, t2_idx: usize, open: bool) {
-        self.inner.set_door_edge(t1_idx, t2_idx, open);
-    }
-
-    /// Forget every recorded door edge. JS re-emits the door set from
-    /// scratch when the Yjs token list changes.
-    pub fn clear_door_edges(&mut self) {
-        self.inner.clear_door_edges();
+    /// Replace the whole edge-override set from a flat `[t1, t2, mask, …]`
+    /// array: bit 1 = light/LOS, bit 2 = movement (open door = 3, window = 1,
+    /// closed door = 0 — seals the edge even within a room).
+    pub fn replace_edges(&mut self, flat: &[u32]) {
+        self.inner.replace_edges(flat);
     }
 
     /// Tile-coord BFS pathfinder. Returns the chain of tile indices from
