@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use crate::collision::{CollisionDetector, HybridCollisionMap};
+use crate::collision::HybridCollisionMap;
 use crate::engine::DEFAULT_ENGINE;
 use crate::arctan;
 
@@ -94,13 +94,14 @@ pub(crate) fn build_ray_table(max_dist: usize) -> RayTable {
 /// Walk the precomputed ray table outward from `pos`, invoking `visit` for
 /// every cell a ray reaches before it is occluded by the [`HybridCollisionMap`]
 /// (Room + Object collision). Shared by [`Light::update`] (which renders a
-/// coloured pixel per visited cell) and [`crate::engine::LightingEngine::compute_fov`]
-/// (which marks a binary visibility mask).
+/// mask pixel per visited cell) and [`crate::engine::LightingEngine::compute_fov`]
+/// (which marks a visibility mask).
 ///
-/// `visit` receives `(offset, angle, d)`, where `offset` is the visited cell's
-/// position relative to `pos` and `angle`/`d` identify the ray. World (cell)
-/// coords are just `pos + offset`. Distance is capped at `max_dist`; the same
-/// occlusion rules as `Light::update` apply, minus colour and falloff.
+/// `visit` receives `(offset, angle, d, weight)`, where `offset` is the visited
+/// cell's position relative to `pos`, `angle`/`d` identify the ray and `weight`
+/// is the Object transmittance *before* the cell (deposit then attenuate: an
+/// opaque cell is seen, not seen through). Cells in `pos`'s own tile never
+/// occlude. World (cell) coords are `pos + offset`; distance caps at `max_dist`.
 pub(crate) fn trace_visible_cells<F>(
     pos: PtI,
     collision: &HybridCollisionMap,
@@ -108,9 +109,19 @@ pub(crate) fn trace_visible_cells<F>(
     max_dist: usize,
     mut visit: F,
 ) where
-    F: FnMut(PtI, usize, u8),
+    F: FnMut(PtI, usize, u8, f32),
 {
     let mut blocked_angles = [255u8; ANGLES];
+
+    let block = |blocked_angles: &mut [u8; ANGLES], angle: usize, d: usize| {
+        blocked_angles[angle] = blocked_angles[angle].min(d as u8);
+        if d < 3 {
+            let left_angle = if angle > 0 { angle - 1 } else { ANGLES - 1 };
+            let right_angle = (angle + 1) % ANGLES;
+            blocked_angles[left_angle] = blocked_angles[left_angle].min(d as u8);
+            blocked_angles[right_angle] = blocked_angles[right_angle].min(d as u8);
+        }
+    };
 
     for d in 0..max_dist {
         for angle in 0..ANGLES {
@@ -127,25 +138,20 @@ pub(crate) fn trace_visible_cells<F>(
                     let curr = (cell.0 + pos.0, cell.1 + pos.1);
 
                     // Full-ray occlusion check from the viewer origin to cell.
-                    if collision.is_blocked(pos.0, pos.1, curr.0, curr.1) {
-                        blocked_angles[angle] = d as u8;
-
-                        if d < 3 {
-                            let left_angle = if angle > 0 { angle - 1 } else { ANGLES - 1 };
-                            let right_angle = (angle + 1) % ANGLES;
-
-                            if blocked_angles[left_angle] > d as u8 {
-                                blocked_angles[left_angle] = d as u8;
-                            }
-                            if blocked_angles[right_angle] > d as u8 {
-                                blocked_angles[right_angle] = d as u8;
-                            }
-                        }
-
+                    let (before, after) = if collision.room_blocked(pos.0, pos.1, curr.0, curr.1) {
+                        (0.0, 0.0)
+                    } else {
+                        collision.transmittance(pos.0, pos.1, curr.0, curr.1)
+                    };
+                    if before == 0.0 {
+                        block(&mut blocked_angles, angle, d);
                         break;
                     }
 
-                    visit(*cell, angle, d as u8);
+                    visit(*cell, angle, d as u8, before);
+                    if after == 0.0 {
+                        block(&mut blocked_angles, angle, d);
+                    }
                 }
             }
         }
@@ -216,14 +222,14 @@ impl Light {
 
         let pos = self.pos;
         let effective_max = (self.r as usize).min(max_dist);
-        trace_visible_cells(pos, collision, rays, effective_max, |offset, _angle, d| {
-            self.render_light_pixel(offset, d);
+        trace_visible_cells(pos, collision, rays, effective_max, |offset, _angle, d, weight| {
+            self.render_light_pixel(offset, d, weight);
         });
 
         self.canvas.as_ptr()
     }
 
-    fn render_light_pixel(&mut self, cell: PtI, distance: u8) {
+    fn render_light_pixel(&mut self, cell: PtI, distance: u8, weight: f32) {
         let c = (
             cell.0 + self.canvas_size as i16 / 2,
             cell.1 + self.canvas_size as i16 / 2,
@@ -239,7 +245,7 @@ impl Light {
         if cell_idx < self.canvas.len() {
             // Raw linear attenuation — the falloff *curve* is a renderer-side
             // option (`<lighting><falloff>`, ADR-0010): shaping happens there.
-            self.canvas[cell_idx] = Color(255, 255, 255, falloff as u8);
+            self.canvas[cell_idx] = Color(255, 255, 255, (falloff as f32 * weight).round() as u8);
         }
     }
 }
@@ -270,6 +276,14 @@ impl FullMapCanvas {
     /// Reset every cell to transparent.
     fn clear(&mut self) {
         self.cells.iter_mut().for_each(|p| *p = Color::default());
+    }
+
+    /// Cell `(x, y)`; out-of-bounds reads as transparent.
+    fn get(&self, x: i16, y: i16) -> Color {
+        if x < 0 || y < 0 || x >= self.size as i16 || y >= self.size as i16 {
+            return Color::default();
+        }
+        self.cells[x as usize + y as usize * self.size]
     }
 
     /// Write `color` to cell `(x, y)`; out-of-bounds writes are ignored.
@@ -325,13 +339,13 @@ impl Ambient {
     }
 }
 
-/// A full-map binary **FOV canvas**.
+/// A full-map **FOV canvas**.
 ///
 /// Shaped like an [`Ambient`]'s output (full-map, `cells_per_row²` RGBA cells,
 /// blitted at origin `(0,0)`) rather than a [`Light`]'s bounding square. Each
-/// cell is either opaque white `(255, 255, 255, 255)` where some viewer's rays
-/// reach it, or fully transparent `(0, 0, 0, 0)` where none do — binary alpha,
-/// no falloff. Per [ADR-0006](../../docs/adr/0006-fog-of-war-in-renderer.md) the
+/// cell is white with alpha = the best Object transmittance any viewer's rays
+/// reach it with (255 clear sight, partial through translucent Objects, 0
+/// unseen) — no distance falloff. Per [ADR-0006](../../docs/adr/0006-fog-of-war-in-renderer.md) the
 /// engine holds no explored/fog state; this is the live mask only, recomputed
 /// from scratch on every [`crate::engine::LightingEngine::compute_fov`] call.
 pub struct Fov {
@@ -355,11 +369,14 @@ impl Fov {
         self.canvas.clear();
     }
 
-    /// Mark the cell at `(cx, cy)` (world cell coords) as visible — opaque
-    /// white. Out-of-bounds coordinates are ignored. Idempotent, so unioning
-    /// multiple viewers is just repeated marking.
-    pub(crate) fn mark(&mut self, cx: i16, cy: i16) {
-        self.canvas.set(cx, cy, Color(255, 255, 255, 255));
+    /// Mark the cell at `(cx, cy)` (world cell coords) visible with `weight`
+    /// (0…1). Max-merged, so unioning viewers is just repeated marking.
+    /// Out-of-bounds coordinates are ignored.
+    pub(crate) fn mark(&mut self, cx: i16, cy: i16, weight: f32) {
+        let alpha = (weight * 255.0).round() as u8;
+        if alpha > self.canvas.get(cx, cy).3 {
+            self.canvas.set(cx, cy, Color(255, 255, 255, alpha));
+        }
     }
 }
 

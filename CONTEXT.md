@@ -21,7 +21,11 @@ A blocked edge between two adjacent tiles of different types. Materialises in tw
 _Avoid_: "obstacle" (ambiguous with **Object**), "edge collision".
 
 **Object**:
-A coherent group of blocked **Cells** in the runtime-mutable collision bitmap (`PixelCollisionMap`) that represents one in-world thing — a chair, a barrel, a character. The atomic write primitive (`set_pixel(cx, cy, true)`) marks a single cell as blocked; an Object is the higher-level concept built from many such writes.
+A coherent group of occluding **Cells** in the runtime-mutable opacity map (`PixelCollisionMap`, u8 per cell: 0 clear … 255 opaque) that represents one in-world thing — a crate, smoke, a monster. The atomic write primitive (`set_pixel(cx, cy, true)`) marks a single cell fully opaque; `replace_solids` writes whole **Solid tiles**. A ray's *transmittance* is the product of cell transparencies it crosses; an opaque cell is lit/seen but not seen through (deposit, then attenuate), and cells in the ray origin's own tile never occlude it.
+
+**Solid tile**:
+A tile carrying an authored opacity and a `collides` flag (`replace_solids`, whole-set replace like `replace_edges`). Opacity is spread over the tile's cells as `t^(1/cells_per_tile)` so one straight crossing attenuates by exactly `t`; `cast_ray` multiplies crossed tiles' transparency and fails below `LOS_MIN`. `collides` refuses path steps *into* the tile (leaving is fine).
+_Avoid_: "blocker", "obstacle".
 _Avoid_: "obstacle" (ambiguous with **Wall**), "pixel obstacle" (confusing — see "Cell"), conflating "Object" with the atomic single-cell write.
 
 **Room**:
@@ -54,8 +58,9 @@ _Avoid_: "global light" (ambient is per-room, not scene-wide), "room property" /
 **FOV canvas**:
 A full-map RGBA canvas (like an **Ambient**'s output, not a **Light**'s
 bounding square) marking which Cells are reachable by rays from any of a
-supplied list of *viewer points* (cell coords, fixed radius). Binary alpha —
-a cell is visible or it isn't. The engine computes the live mask only; it
+supplied list of *viewer points* (cell coords, fixed radius). Alpha = the
+best **Object** transmittance any viewer reaches the cell with (255 clear,
+partial through translucent Objects, 0 unseen); no distance falloff. The engine computes the live mask only; it
 holds **no** explored/fog memory — fog accumulation is a downstream renderer
 concern.
 _Avoid_: "fog", "explored mask" (neither exists in this engine), "viewer"
@@ -67,7 +72,7 @@ object).
 - The world has exactly **one** Tile layout, which deterministically defines all **Walls** and all **Rooms**.
 - A **Cell** belongs to exactly one **Tile** (and via that tile, exactly one **Room**).
 - An **Object** occupies one **Cell** and is independent of Walls and Rooms.
-- A ray from a **Light** is occluded if (a) its endpoints lie in different **Rooms** (broad-phase, UnionFind), OR (b) any **Cell** on its Bresenham path contains an **Object** (narrow-phase, `PixelCollisionMap`).
+- A ray from a **Light** is occluded if (a) its endpoints lie in different **Rooms** (broad-phase, UnionFind), OR (b) its **Object** transmittance reaches 0 (narrow-phase, `PixelCollisionMap`); partial transmittance scales the mask alpha.
 - Walls and Objects are authored through **different** APIs and should be tested by **different** scenarios.
 
 ## Example dialogue

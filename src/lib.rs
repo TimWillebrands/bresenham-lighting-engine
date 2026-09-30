@@ -490,6 +490,13 @@ impl WasmLightingEngine {
         self.inner.replace_edges(flat);
     }
 
+    /// Replace the whole solid-tile set from a flat `[tile, opacity255,
+    /// collides, …]` array (ADR-0016): opacity occludes light/FOV/LoS per
+    /// tile crossed, `collides != 0` refuses path steps into the tile.
+    pub fn replace_solids(&mut self, flat: &[u32]) {
+        self.inner.replace_solids(flat);
+    }
+
     /// Tile-coord BFS pathfinder. Returns the chain of tile indices from
     /// `(x1,y1)` to `(x2,y2)`, or an empty `Vec` if no route exists.
     pub fn path(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> Vec<usize> {
@@ -538,7 +545,8 @@ impl WasmLightingEngine {
     /// cell coords (`[x0, y0, x1, y1, …]`, arriving as an `Int16Array`) and
     /// return a pointer to a full-map **FOV canvas** (`cells_per_row²` RGBA
     /// cells in wasm linear memory). Cells reached by any viewer's rays are
-    /// opaque white; everything else is transparent. Binary alpha — no falloff.
+    /// white with alpha = Object transmittance (partial through translucent
+    /// solids); everything else is transparent. No distance falloff.
     /// The canvas is reused between calls, so read it back through the
     /// wasm-memory view before the next `compute_fov`. See ADR-0006.
     pub fn compute_fov(&mut self, viewers: Vec<i16>) -> *const lighting::Color {

@@ -72,7 +72,21 @@ pub struct LightingEngine {
     /// never enter it (a union would dissolve the whole boundary); they are
     /// consulted per-edge in `neighbours` / `cast_ray`.
     tile_uf: UnionFind,
+    /// Solid tiles (ADR-0016): tile index → authored opacity + collides.
+    /// Opacity is also spread over the tile's cells in the Object map.
+    solids: HashMap<usize, Solid>,
 }
+
+/// A solid tile as authored: `opacity` 0 clear … 255 opaque per crossing.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Solid {
+    pub opacity: u8,
+    pub collides: bool,
+}
+
+/// `cast_ray` passes while the product of crossed tiles' transparency is at
+/// least this (translucent smoke never reaches 0).
+pub const LOS_MIN: f32 = 0.1;
 
 /// Edge-permission bit: light rays and line-of-sight cross this edge.
 pub const EDGE_LIGHT: u8 = 1;
@@ -101,7 +115,7 @@ impl LightingEngine {
         let cells = vec![CellDetails::default(); cells_total];
         // Default: one big room covering all cells, no walls, no objects.
         let map_data = vec![1i32; cells_per_row * cells_per_row];
-        let collision = HybridCollisionMap::new(map_data, cells_per_row);
+        let collision = HybridCollisionMap::new(map_data, cells_per_row, cells_per_tile);
         let max_dist = crate::lighting::max_dist();
         let all_rays = build_ray_table(max_dist);
         let tile_uf = UnionFind::new(vec![0i32; tiles_total], tiles_per_row);
@@ -118,6 +132,7 @@ impl LightingEngine {
             fov: None,
             edges: HashMap::new(),
             tile_uf,
+            solids: HashMap::new(),
         }
     }
 
@@ -235,10 +250,57 @@ impl LightingEngine {
         self.edges.get(&canonical_edge(t1_idx, t2_idx)).copied()
     }
 
-    /// Clear all object cells (does not touch the tile map).
+    /// Replace the whole solid set from a flat `[tile, opacity255, collides,
+    /// …]` array. Each tile's cells get `t^(1/cells_per_tile)` so one straight
+    /// crossing attenuates by exactly the authored transparency `t`.
+    pub fn replace_solids(&mut self, flat: &[u32]) {
+        let total = self.tiles_per_row * self.tiles_per_row;
+        let mut next: HashMap<usize, Solid> = HashMap::new();
+        for chunk in flat.chunks_exact(3) {
+            let tile = chunk[0] as usize;
+            if tile >= total {
+                continue;
+            }
+            next.insert(tile, Solid { opacity: chunk[1].min(255) as u8, collides: chunk[2] != 0 });
+        }
+        let stale: Vec<usize> = self.solids.keys().filter(|t| !next.contains_key(t)).copied().collect();
+        for tile in stale {
+            self.fill_tile_opacity(tile, 0);
+        }
+        for (&tile, solid) in &next {
+            let t = 1.0 - solid.opacity as f64 / 255.0;
+            let cell_t = t.powf(1.0 / self.cells_per_tile as f64);
+            let cell_opacity = (255.0 * (1.0 - cell_t)).round() as u8;
+            self.fill_tile_opacity(tile, cell_opacity);
+        }
+        self.solids = next;
+    }
+
+    /// Recorded solid on a tile, if any.
+    pub fn solid_at(&self, tile_idx: usize) -> Option<Solid> {
+        self.solids.get(&tile_idx).copied()
+    }
+
+    fn fill_tile_opacity(&mut self, tile: usize, opacity: u8) {
+        let cpt = self.cells_per_tile;
+        let (cx0, cy0) = ((tile % self.tiles_per_row) * cpt, (tile / self.tiles_per_row) * cpt);
+        let map = self.collision.pixel_map_mut();
+        for dy in 0..cpt {
+            for dx in 0..cpt {
+                map.set_opacity((cx0 + dx) as u16, (cy0 + dy) as u16, opacity);
+            }
+        }
+    }
+
+    fn collides(&self, tile_idx: usize) -> bool {
+        self.solids.get(&tile_idx).is_some_and(|s| s.collides)
+    }
+
+    /// Clear all object cells and solids (does not touch the tile map).
     pub fn clear_pixel_collisions(&mut self) {
         use crate::collision::CollisionDetector;
         self.collision.clear();
+        self.solids.clear();
     }
 
     /// Create or update a light and return a pointer to its transport mask —
@@ -323,10 +385,10 @@ impl LightingEngine {
     /// `viewers` is a flat array of viewer positions in cell coords
     /// `[x0, y0, x1, y1, …]`; a trailing odd element (if any) is ignored. Each
     /// viewer casts rays out to the ray table's max distance through the same
-    /// Room + Object collision as [`Light::update`] (minus colour and falloff);
-    /// every cell a ray reaches is marked opaque white `(255, 255, 255, 255)`
-    /// and everything else stays transparent `(0, 0, 0, 0)`. Results union
-    /// across viewers (marking is idempotent). An empty `viewers` array yields a
+    /// Room + Object collision as [`Light::update`] (minus falloff); every
+    /// cell a ray reaches is marked white with alpha = its Object
+    /// transmittance, everything else stays transparent `(0, 0, 0, 0)`.
+    /// Results max-merge across viewers. An empty `viewers` array yields a
     /// fully-transparent canvas.
     ///
     /// Pure compute: the engine stores no explored/fog memory (ADR-0006). The
@@ -345,8 +407,8 @@ impl LightingEngine {
         fov.clear();
         for pair in viewers.chunks_exact(2) {
             let pos = (pair[0], pair[1]);
-            trace_visible_cells(pos, collision, rays, max_dist, |offset, _angle, _d| {
-                fov.mark(pos.0 + offset.0, pos.1 + offset.1);
+            trace_visible_cells(pos, collision, rays, max_dist, |offset, _angle, _d, weight| {
+                fov.mark(pos.0 + offset.0, pos.1 + offset.1, weight);
             });
         }
         fov.canvas().as_ptr()
@@ -485,7 +547,7 @@ impl LightingEngine {
         if start >= total || goal >= total {
             return Vec::new();
         }
-        if self.tile_at(start) <= 0 || self.tile_at(goal) <= 0 {
+        if self.tile_at(start) <= 0 || self.tile_at(goal) <= 0 || self.collides(goal) {
             return Vec::new();
         }
 
@@ -531,7 +593,8 @@ impl LightingEngine {
     /// across a boundary, a sealed edge denies even within a room); without
     /// one, staying inside the same room decides. Overrides are checked
     /// per-step, never via union-find merges, so opening one door does
-    /// not silently dissolve the rest of the wall.
+    /// not silently dissolve the rest of the wall. Solid tiles crossed
+    /// (not the endpoints) multiply transparency; fails below [`LOS_MIN`].
     pub fn cast_ray(&mut self, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
         let tpr = self.tiles_per_row as i32;
         let in_bounds = |x: i32, y: i32| x >= 0 && y >= 0 && x < tpr && y < tpr;
@@ -548,11 +611,21 @@ impl LightingEngine {
         let mut py = y1;
         let mut ix = 0;
         let mut iy = 0;
-        let mut current_idx = (py * tpr + px) as usize;
+        let origin_idx = (py * tpr + px) as usize;
+        let mut current_idx = origin_idx;
         let mut current_room = self.tile_uf.find(current_idx);
+        let mut transparency = 1.0f32;
 
         while ix < nx || iy < ny {
             let prev_idx = current_idx;
+            if prev_idx != origin_idx {
+                if let Some(solid) = self.solids.get(&prev_idx) {
+                    transparency *= 1.0 - solid.opacity as f32 / 255.0;
+                    if transparency < LOS_MIN {
+                        return false;
+                    }
+                }
+            }
             if (ix as f32 + 0.5) / (nx as f32) < (iy as f32 + 0.5) / (ny as f32) {
                 px += sx;
                 ix += 1;
@@ -603,6 +676,7 @@ impl LightingEngine {
     /// without one, sharing a room (same `tile_uf` root) decides. Diagonals
     /// are reachable only if at least one of the two cardinal steps that
     /// lead to the diagonal is itself reachable (no corner cutting).
+    /// Colliding solid tiles are never reachable; leaving one is fine.
     pub fn neighbours(&mut self, tile_idx: usize, include_diagonal: bool) -> Vec<usize> {
         let tiles_per_row = self.tiles_per_row;
         let total = tiles_per_row * tiles_per_row;
@@ -619,8 +693,13 @@ impl LightingEngine {
         let west = if col > 0 { Some(tile_idx - 1) } else { None };
         let east = if col + 1 < tiles_per_row { Some(tile_idx + 1) } else { None };
 
+        let solids = &self.solids;
+        let collides = |i: usize| solids.get(&i).is_some_and(|s| s.collides);
         let reachable = |ni: Option<usize>, uf: &mut UnionFind| -> Option<usize> {
             let ni = ni?;
+            if collides(ni) {
+                return None;
+            }
             // Empty-map fast path: no overrides means room membership decides.
             let ok = if self.edges.is_empty() {
                 uf.find(ni) == room
@@ -660,7 +739,7 @@ impl LightingEngine {
                 if !(gate_a || gate_b) {
                     return;
                 }
-                if let Some(d) = idx {
+                if let Some(d) = idx.filter(|&d| !collides(d)) {
                     out.push(d);
                 }
             };
@@ -1413,5 +1492,100 @@ mod tests {
             "clearing edges must re-split the rooms"
         );
         assert_eq!(e.edge_mask(idx(1, 1), idx(2, 1)), None);
+    }
+
+    // --- Solid tiles (ADR-0016) ---------------------------------------------
+
+    /// 8×8 tiles of 4 cells, one room; `(tile, opacity, collides)` solids.
+    fn solid_world(solids: &[(usize, u32, u32)]) -> LightingEngine {
+        let mut e = LightingEngine::new(4, 8);
+        e.set_tile_map(vec![1u8; 64]);
+        let flat: Vec<u32> = solids.iter().flat_map(|&(t, o, c)| [t as u32, o, c]).collect();
+        e.replace_solids(&flat);
+        e
+    }
+
+    fn fov_alpha(e: &LightingEngine, cx: usize, cy: usize) -> u8 {
+        e.fov_canvas().expect("computed")[cy * e.cells_per_row() + cx].3
+    }
+
+    #[test]
+    fn opaque_solid_is_seen_not_seen_through() {
+        // Viewer at tile (2,4) centre, crate on tile (3,4) = cells x 12..15.
+        let mut e = solid_world(&[(4 * 8 + 3, 255, 1)]);
+        e.compute_fov(&[10, 18]);
+        assert_eq!(fov_alpha(&e, 12, 18), 255, "crate face visible");
+        assert_eq!(fov_alpha(&e, 13, 18), 0, "crate interior hidden");
+        assert_eq!(fov_alpha(&e, 17, 18), 0, "beyond the crate hidden");
+    }
+
+    #[test]
+    fn translucent_solid_attenuates_by_authored_value_per_crossing() {
+        let mut e = solid_world(&[(4 * 8 + 3, 128, 0)]);
+        e.compute_fov(&[10, 18]);
+        let beyond = fov_alpha(&e, 17, 18) as i32;
+        assert!((beyond - 127).abs() <= 3, "half transparency ≈ half alpha, got {}", beyond);
+        assert_eq!(fov_alpha(&e, 12, 18), 255, "entry cell sees full weight");
+    }
+
+    #[test]
+    fn origin_tile_never_occludes_its_own_viewer_or_light() {
+        // Firepit: opaque tile with a light inside still lights its room.
+        let mut e = solid_world(&[(4 * 8 + 3, 255, 1)]);
+        e.compute_fov(&[14, 18]);
+        assert_eq!(fov_alpha(&e, 19, 18), 255, "viewer inside sees out clearly");
+        e.update_or_add_light(1, 8, 14, 18);
+        let canvas = e.light_canvas(1).unwrap();
+        let size = e.light_canvas_size(1).unwrap();
+        assert!(canvas[8 * size + 13].3 > 0, "light inside lights beyond its tile");
+    }
+
+    #[test]
+    fn light_is_dimmed_through_translucent_and_stopped_by_opaque() {
+        let mut clear = solid_world(&[]);
+        clear.update_or_add_light(1, 9, 10, 18);
+        let mut smoke = solid_world(&[(4 * 8 + 3, 128, 0)]);
+        smoke.update_or_add_light(1, 9, 10, 18);
+        let mut wall = solid_world(&[(4 * 8 + 3, 255, 1)]);
+        wall.update_or_add_light(1, 9, 10, 18);
+        // Cell (17,18) = canvas (9+7, 9) in a radius-9 light.
+        let at = |e: &LightingEngine| e.light_canvas(1).unwrap()[9 * 19 + 16].3;
+        assert!(at(&clear) > 0);
+        assert!(at(&smoke) > 0 && at(&smoke) < at(&clear), "smoke dims");
+        assert_eq!(at(&wall), 0, "opaque blocks");
+        let face = wall.light_canvas(1).unwrap()[9 * 19 + 11].3;
+        assert!(face > 0, "lit crate face");
+    }
+
+    #[test]
+    fn replace_solids_clears_removed_tiles() {
+        let mut e = solid_world(&[(4 * 8 + 3, 255, 1)]);
+        e.replace_solids(&[]);
+        e.compute_fov(&[10, 18]);
+        assert_eq!(fov_alpha(&e, 17, 18), 255);
+        assert_eq!(e.solid_at(4 * 8 + 3), None);
+    }
+
+    #[test]
+    fn cast_ray_passes_through_translucent_until_los_min() {
+        let idx = |x: usize, y: usize| y * 8 + x;
+        let e_ok = |solids: &[(usize, u32, u32)]| solid_world(solids).cast_ray(0, 4, 6, 4);
+        assert!(!e_ok(&[(idx(3, 4), 255, 1)]), "opaque blocks LoS");
+        assert!(e_ok(&[(idx(3, 4), 179, 0)]), "single smoke (t≈0.3) passes");
+        assert!(!e_ok(&[(idx(3, 4), 179, 0), (idx(4, 4), 179, 0)]), "two smokes < LOS_MIN");
+        let mut e = solid_world(&[(idx(6, 4), 255, 1), (idx(0, 4), 255, 1)]);
+        assert!(e.cast_ray(0, 4, 6, 4), "endpoint solids never occlude");
+    }
+
+    #[test]
+    fn colliding_solid_refuses_entry_but_allows_leaving() {
+        let idx = |x: usize, y: usize| y * 8 + x;
+        let mut e = solid_world(&[(idx(3, 4), 255, 1), (idx(5, 4), 77, 0)]);
+        assert!(!e.neighbours(idx(2, 4), true).contains(&idx(3, 4)));
+        assert!(e.neighbours(idx(4, 4), false).contains(&idx(5, 4)), "non-colliding stays passable");
+        assert_eq!(e.neighbours(idx(3, 4), false).len(), 4, "leaving is fine");
+        assert!(e.path(0, 4, 3, 4).is_empty(), "colliding goal");
+        let p = e.path(0, 4, 6, 4);
+        assert!(!p.is_empty() && !p.contains(&idx(3, 4)), "detours around");
     }
 }

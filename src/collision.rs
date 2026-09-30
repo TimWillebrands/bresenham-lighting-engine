@@ -32,57 +32,66 @@ pub trait CollisionDetector: Send + Sync {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-/// Cell-bitmap used for the narrow-phase Object check.
+/// Per-cell opacity map used for the narrow-phase Object check (0 clear …
+/// 255 opaque). Cells inside the walk origin's tile never occlude it.
 ///
 /// Despite the name, the indices it stores are **cells**, not screen pixels.
 /// The name is preserved for WASM/JS back-compat (see `CONTEXT.md`).
 pub struct PixelCollisionMap {
     width: u16,
     height: u16,
-    pixels: Vec<u64>,
+    cells_per_tile: u16,
+    opacity: Vec<u8>,
+    /// Count of non-zero cells; 0 = every walk is fully transmissive.
+    occupied: usize,
 }
 
+/// Below this a ray's transmittance counts as zero (would render as alpha 0).
+pub const MIN_TRANSMITTANCE: f32 = 1.0 / 255.0;
+
 impl PixelCollisionMap {
-    pub fn new(width: u16, height: u16) -> Self {
+    pub fn new(width: u16, height: u16, cells_per_tile: u16) -> Self {
         let total = (width as usize) * (height as usize);
-        let storage_size = (total + 63) / 64;
         Self {
             width,
             height,
-            pixels: vec![0; storage_size],
+            cells_per_tile: cells_per_tile.max(1),
+            opacity: vec![0; total],
+            occupied: 0,
         }
+    }
+
+    fn index(&self, x: u16, y: u16) -> Option<usize> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        Some((y as usize) * (self.width as usize) + (x as usize))
+    }
+
+    /// Set a cell's opacity (0 clear … 255 opaque). Out-of-bounds is ignored.
+    pub fn set_opacity(&mut self, x: u16, y: u16, opacity: u8) {
+        let Some(i) = self.index(x, y) else { return };
+        let was = self.opacity[i];
+        if was == 0 && opacity != 0 {
+            self.occupied += 1;
+        } else if was != 0 && opacity == 0 {
+            self.occupied -= 1;
+        }
+        self.opacity[i] = opacity;
+    }
+
+    /// Cell opacity (0 clear … 255 opaque); out-of-bounds reads as clear.
+    pub fn opacity(&self, x: u16, y: u16) -> u8 {
+        self.index(x, y).map_or(0, |i| self.opacity[i])
     }
 
     pub fn set_pixel(&mut self, x: u16, y: u16, blocked: bool) {
-        if x >= self.width || y >= self.height {
-            return;
-        }
-        let pixel_index = (y as usize) * (self.width as usize) + (x as usize);
-        let storage_index = pixel_index / 64;
-        let bit_offset = pixel_index % 64;
-        if storage_index < self.pixels.len() {
-            let mask = 1u64 << bit_offset;
-            if blocked {
-                self.pixels[storage_index] |= mask;
-            } else {
-                self.pixels[storage_index] &= !mask;
-            }
-        }
+        self.set_opacity(x, y, if blocked { 255 } else { 0 });
     }
 
+    /// `true` iff the cell is fully opaque.
     pub fn get_pixel(&self, x: u16, y: u16) -> bool {
-        if x >= self.width || y >= self.height {
-            return false;
-        }
-        let pixel_index = (y as usize) * (self.width as usize) + (x as usize);
-        let storage_index = pixel_index / 64;
-        let bit_offset = pixel_index % 64;
-        if storage_index < self.pixels.len() {
-            let mask = 1u64 << bit_offset;
-            (self.pixels[storage_index] & mask) != 0
-        } else {
-            false
-        }
+        self.opacity(x, y) == 255
     }
 
     pub fn set_pixel_batch<I>(&mut self, pixels: I)
@@ -93,10 +102,15 @@ impl PixelCollisionMap {
             self.set_pixel(x, y, blocked);
         }
     }
-}
 
-impl CollisionDetector for PixelCollisionMap {
-    fn is_blocked(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
+    /// Transparency product along the Bresenham walk `(x0,y0)→(x1,y1)`,
+    /// skipping cells in the origin's tile: `(before, after)` the end cell.
+    pub fn transmittance(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> (f32, f32) {
+        if self.occupied == 0 {
+            return (1.0, 1.0);
+        }
+        let cpt = self.cells_per_tile as i16;
+        let origin_tile = (x0.div_euclid(cpt), y0.div_euclid(cpt));
         let dx = (x1 - x0).abs();
         let dy = (y1 - y0).abs();
         let sx = if x0 < x1 { 1 } else { -1 };
@@ -105,16 +119,29 @@ impl CollisionDetector for PixelCollisionMap {
 
         let mut x = x0;
         let mut y = y0;
+        let mut t = 1.0f32;
         let mut step_count = 0;
 
         loop {
-            if x >= 0 && y >= 0 && (x as u16) < self.width && (y as u16) < self.height {
-                if self.get_pixel(x as u16, y as u16) {
-                    return true;
+            let at_end = x == x1 && y == y1;
+            let before = t;
+            if (x.div_euclid(cpt), y.div_euclid(cpt)) != origin_tile
+                && x >= 0
+                && y >= 0
+            {
+                let o = self.opacity(x as u16, y as u16);
+                if o != 0 {
+                    t *= 1.0 - o as f32 / 255.0;
+                    if t < MIN_TRANSMITTANCE {
+                        t = 0.0;
+                    }
                 }
             }
-            if x == x1 && y == y1 {
-                break;
+            if at_end {
+                return (before, t);
+            }
+            if t == 0.0 {
+                return (0.0, 0.0);
             }
             let e2 = 2 * err;
             if e2 > -dy {
@@ -127,14 +154,20 @@ impl CollisionDetector for PixelCollisionMap {
             }
             step_count += 1;
             if step_count > 1000 {
-                break;
+                return (t, t);
             }
         }
-        false
+    }
+}
+
+impl CollisionDetector for PixelCollisionMap {
+    fn is_blocked(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
+        self.transmittance(x0, y0, x1, y1).1 == 0.0
     }
 
     fn clear(&mut self) {
-        self.pixels.fill(0);
+        self.opacity.fill(0);
+        self.occupied = 0;
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -163,11 +196,15 @@ pub struct HybridCollisionMap {
 }
 
 impl HybridCollisionMap {
-    pub fn new(map_data: Vec<i32>, map_size: usize) -> Self {
+    pub fn new(map_data: Vec<i32>, map_size: usize, cells_per_tile: usize) -> Self {
         let uf = UnionFind::new(map_data, map_size);
         Self {
             union_find: Arc::new(RwLock::new(uf)),
-            pixel_map: PixelCollisionMap::new(map_size as u16, map_size as u16),
+            pixel_map: PixelCollisionMap::new(
+                map_size as u16,
+                map_size as u16,
+                cells_per_tile as u16,
+            ),
             map_size,
             pass_cell_edges: HashSet::new(),
             block_cell_edges: HashSet::new(),
@@ -202,8 +239,10 @@ impl HybridCollisionMap {
     }
 }
 
-impl CollisionDetector for HybridCollisionMap {
-    fn is_blocked(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
+impl HybridCollisionMap {
+    /// Broad phase only: does a Wall (room boundary / sealed edge) cut the
+    /// walk `(x0,y0)→(x1,y1)`? Objects are [`Self::transmittance`]'s job.
+    pub fn room_blocked(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
         let size = self.map_size as i32;
         let in_bounds = |x: i32, y: i32| x >= 0 && y >= 0 && x < size && y < size;
         let (x0i, y0i, x1i, y1i) = (x0 as i32, y0 as i32, x1 as i32, y1 as i32);
@@ -257,7 +296,18 @@ impl CollisionDetector for HybridCollisionMap {
                 }
             }
         }
-        self.pixel_map.is_blocked(x0, y0, x1, y1)
+        false
+    }
+
+    /// Narrow phase: Object transmittance `(before, after)` the end cell.
+    pub fn transmittance(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> (f32, f32) {
+        self.pixel_map.transmittance(x0, y0, x1, y1)
+    }
+}
+
+impl CollisionDetector for HybridCollisionMap {
+    fn is_blocked(&self, x0: i16, y0: i16, x1: i16, y1: i16) -> bool {
+        self.room_blocked(x0, y0, x1, y1) || self.transmittance(x0, y0, x1, y1).1 == 0.0
     }
 
     fn clear(&mut self) {
@@ -336,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_pixel_collision_map_basic() {
-        let mut map = PixelCollisionMap::new(10, 10);
+        let mut map = PixelCollisionMap::new(10, 10, 1);
         assert!(!map.get_pixel(5, 5));
         map.set_pixel(5, 5, true);
         assert!(map.get_pixel(5, 5));
@@ -346,15 +396,27 @@ mod tests {
 
     #[test]
     fn test_pixel_collision_map_line_blocking() {
-        let mut map = PixelCollisionMap::new(10, 10);
+        let mut map = PixelCollisionMap::new(10, 10, 1);
         map.set_pixel(5, 5, true);
         assert!(map.is_blocked(0, 5, 9, 5));
         assert!(!map.is_blocked(0, 0, 9, 0));
     }
 
     #[test]
+    fn transmittance_skips_origin_tile_and_deposits_before_end() {
+        let mut map = PixelCollisionMap::new(12, 12, 4);
+        map.set_opacity(1, 1, 255); // origin tile (0,0)
+        map.set_opacity(6, 1, 128); // tile (1,0)
+        assert_eq!(map.transmittance(0, 1, 5, 1), (1.0, 1.0), "origin tile skipped");
+        let (before, after) = map.transmittance(0, 1, 6, 1);
+        assert_eq!(before, 1.0);
+        assert!((after - 127.0 / 255.0).abs() < 1e-6);
+        assert!(map.is_blocked(6, 1, 1, 1) && !map.is_blocked(0, 1, 11, 1));
+    }
+
+    #[test]
     fn test_pixel_collision_map_batch_operations() {
-        let mut map = PixelCollisionMap::new(10, 10);
+        let mut map = PixelCollisionMap::new(10, 10, 1);
         let pixels = vec![(1, 1, true), (2, 2, true), (3, 3, true)];
         map.set_pixel_batch(pixels);
         assert!(map.get_pixel(1, 1));

@@ -3,6 +3,22 @@
 All notable changes to `bresenham-lighting-engine` are documented here.
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 2026-09-25
+
+### Added
+
+- **Solid tiles** (main repo ADR-0016). `replace_solids([tile, opacity255,
+  collides, …])` spreads per-tile opacity over the Object map; `cast_ray`
+  multiplies crossed tiles' transparency (fails below `LOS_MIN`);
+  `neighbours`/`path` refuse stepping into colliding tiles.
+
+### Changed
+
+- The Object map is u8 opacity per cell (`set_pixel` keeps its bool API).
+  Rays deposit then attenuate: an opaque cell is lit/seen, cells behind it
+  are not; cells in the ray origin's tile never occlude it. Light alpha and
+  FOV alpha scale by transmittance (FOV no longer binary; max-merged).
+
 ## [Unreleased] — 2026-08-01
 
 ### Changed (breaking)
