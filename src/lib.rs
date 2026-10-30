@@ -80,6 +80,7 @@ pub mod engine;
 pub mod lighting;
 pub mod map_grid;
 pub mod ray;
+pub mod rules;
 pub mod scenarios;
 
 pub use engine::LightingEngine;
